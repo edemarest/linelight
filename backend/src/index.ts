@@ -48,6 +48,10 @@ app.use((req, res, next) => {
 
 const polling = initializePolling();
 
+app.get("/", (_req, res) => {
+  res.status(200).json({ status: "ok", service: "linelight-backend", timestamp: new Date().toISOString() });
+});
+
 const parseNumberParam = (value: unknown): number | undefined => {
   if (typeof value !== "string") return undefined;
   const parsed = Number(value);
