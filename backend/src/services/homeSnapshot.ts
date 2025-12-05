@@ -24,8 +24,8 @@ type StationGroup = {
   minDistance: number;
 };
 
-const HOME_CACHE_COORD_PRECISION = 0.0025; // ~275m
-const HOME_CACHE_RADIUS_INCREMENT = 100;
+const HOME_CACHE_COORD_PRECISION = 0.01; // ~1.1km
+const HOME_CACHE_RADIUS_INCREMENT = 250;
 
 const quantizeCoordinate = (value: number) =>
   (Math.round(value / HOME_CACHE_COORD_PRECISION) * HOME_CACHE_COORD_PRECISION).toFixed(4);
@@ -270,16 +270,26 @@ const collectStopsWithinRadius = (
   lng: number,
   radiusMeters: number,
   limit: number,
+  stopRouteMap?: Map<string, Set<string>>,
 ): Array<{ stop: MbtaStop; distance: number }> => {
   if (!stops) return [];
-  return stops
-    .map((stop) => ({
-      stop,
-      distance: haversineDistanceMeters(lat, lng, stop.attributes.latitude, stop.attributes.longitude),
-    }))
-    .filter((entry) => entry.distance <= radiusMeters)
-    .sort((a, b) => a.distance - b.distance)
-    .slice(0, limit);
+  const maxCandidates = Math.max(limit * 4, limit);
+  const entries: Array<{ stop: MbtaStop; distance: number }> = [];
+
+  const hasService = (stopId: string) => {
+    if (!stopRouteMap) return true;
+    return (stopRouteMap.get(stopId)?.size ?? 0) > 0;
+  };
+
+  for (const stop of stops) {
+    if (entries.length >= maxCandidates) break;
+    if (!hasService(stop.id)) continue;
+    const distance = haversineDistanceMeters(lat, lng, stop.attributes.latitude, stop.attributes.longitude);
+    if (distance > radiusMeters) continue;
+    entries.push({ stop, distance });
+  }
+
+  return entries.sort((a, b) => a.distance - b.distance).slice(0, limit);
 };
 
 type StopSnapshotFetcher = typeof getStopEtaSnapshot;
@@ -306,13 +316,13 @@ export const buildHomeSnapshot = async (
   allStops.forEach((stop) => stopLookup.set(stop.id, stop));
   const stationChildrenMap = buildStationChildrenMap(allStops);
 
-  const candidateStopLimit = Math.max(options.limit * 4, options.limit);
   const nearbyStops = collectStopsWithinRadius(
     allStops,
     options.lat,
     options.lng,
     options.radiusMeters,
-    candidateStopLimit,
+    options.limit * 4,
+    cache.getStopRouteMap()?.data,
   );
 
   const nearbyGroupsMap = buildGroupsFromEntries(nearbyStops, stopLookup, stationChildrenMap);
