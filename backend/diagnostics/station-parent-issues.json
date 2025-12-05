@@ -1,0 +1,384 @@
+{
+  "generatedAt": "2025-12-04T02:50:13.279Z",
+  "missingParentStations": [
+    {
+      "stopId": "926",
+      "name": "Brighton Ave @ Cambridge St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.353347,
+      "longitude": -71.136687,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "962",
+      "name": "Brighton Ave @ Linden St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.352908,
+      "longitude": -71.130286,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "960",
+      "name": "Brighton Ave @ Malvern St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.352354,
+      "longitude": -71.125623,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "1811",
+      "name": "Brookline St @ Granite St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.355374,
+      "longitude": -71.109987,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "1816",
+      "name": "Brookline St @ Green St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.363303,
+      "longitude": -71.101948,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "969",
+      "name": "Cambridge St @ Dustin St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.350864,
+      "longitude": -71.145539,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "1116",
+      "name": "Cambridge St @ Mass Pike Exit",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.360621,
+      "longitude": -71.118743,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "966",
+      "name": "Cambridge St @ N Beacon St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.353442,
+      "longitude": -71.137948,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "1114",
+      "name": "Cambridge St @ N Harvard St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.357758,
+      "longitude": -71.126505,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "1115",
+      "name": "Cambridge St @ Seattle St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.358658,
+      "longitude": -71.123967,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "922",
+      "name": "Cambridge St opp Dustin St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.350692,
+      "longitude": -71.145688,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "933",
+      "name": "Commonwealth Ave @ Babcock St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.351568,
+      "longitude": -71.121168,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "11972",
+      "name": "Guest St opp New Balance Way",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.356714,
+      "longitude": -71.14318,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "1041",
+      "name": "Market St @ Centola St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.359279,
+      "longitude": -71.147082,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "1040",
+      "name": "Market St @ Guest St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.357313,
+      "longitude": -71.148285,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "2073",
+      "name": "Mt Auburn St @ Brewer St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.373956,
+      "longitude": -71.124752,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "2026",
+      "name": "Mt Auburn St @ Traill St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.375072,
+      "longitude": -71.136647,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "2564",
+      "name": "N Harvard St opp Harvard Stadium Gate 2",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.36708,
+      "longitude": -71.124824,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "2442",
+      "name": "Prospect St @ Harvard St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.36839,
+      "longitude": -71.101745,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "1056",
+      "name": "River St @ Fairmont St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.362565,
+      "longitude": -71.112387,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "2615",
+      "name": "Washington St opp Parker St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.379408,
+      "longitude": -71.100221,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "1061",
+      "name": "Western Ave @ Kinnaird St",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.364952,
+      "longitude": -71.108901,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    },
+    {
+      "stopId": "1064",
+      "name": "Western Ave @ Putnam Ave",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": null,
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.364492,
+      "longitude": -71.114114,
+      "isBoardable": true,
+      "issues": [
+        "missing_parent_station"
+      ]
+    }
+  ],
+  "parentNotLoadedStations": [
+    {
+      "stopId": "70144",
+      "name": "Boston University Central",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": "place-bucen",
+      "parentStationName": null,
+      "platformCode": null,
+      "latitude": 42.350013,
+      "longitude": -71.106902,
+      "isBoardable": true,
+      "issues": [
+        "parent_not_loaded"
+      ]
+    },
+    {
+      "stopId": "76121",
+      "name": "Harvard",
+      "kind": "platform",
+      "locationType": 0,
+      "parentStationId": "place-harsq",
+      "parentStationName": null,
+      "platformCode": "B1",
+      "latitude": 42.37372,
+      "longitude": -71.119121,
+      "isBoardable": true,
+      "issues": [
+        "parent_not_loaded"
+      ]
+    }
+  ],
+  "missingParentCount": 23,
+  "parentNotLoadedCount": 2
+}

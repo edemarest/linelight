@@ -1,0 +1,17 @@
+{
+  "name": "linelight",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "web",
+    "packages/core"
+  ],
+  "scripts": {
+    "build": "npm run build:core && npm run build:backend && npm run build:web",
+    "build:core": "npm --workspace packages/core run build",
+    "build:backend": "npm --workspace backend run build",
+    "build:web": "npm --workspace web run build",
+    "dev:backend": "npm --workspace backend run dev",
+    "dev:web": "npm --workspace web run dev"
+  }
+}

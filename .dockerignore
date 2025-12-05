@@ -1,0 +1,10 @@
+.git
+node_modules
+*.log
+dist
+.env
+.env.local
+.DS_Store
+coverage
+tmp
+temp

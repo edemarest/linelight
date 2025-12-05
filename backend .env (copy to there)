@@ -1,0 +1,14 @@
+# Port for the backend HTTP server
+PORT=4000
+
+# MBTA API base URL
+MBTA_API_BASE_URL=https://api-v3.mbta.com
+
+# MBTA API key (if you have one; can be left blank if not required)
+MBTA_API_KEY=d0caf52b5533410c8adbd50667d1cfb5
+
+# Optional: Redis URL for future shared caching (leave empty if unused)
+REDIS_URL=
+
+# Log level: debug | info | warn | error
+LOG_LEVEL=info

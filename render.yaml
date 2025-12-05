@@ -1,0 +1,56 @@
+services:
+  - type: redis
+    name: linelight-redis
+    plan: starter
+
+  - type: web
+    name: linelight-api
+    env: docker
+    plan: starter
+    branch: main
+    autoDeploy: true
+    dockerfilePath: backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: "4000"
+      - key: MBTA_API_BASE_URL
+        value: https://api-v3.mbta.com
+      - key: MBTA_API_KEY
+        sync: false
+      - key: LOG_LEVEL
+        value: info
+      - key: MBTA_RATE_LIMIT_WINDOW_MS
+        value: "10000"
+      - key: MBTA_RATE_LIMIT_MAX_REQUESTS
+        value: "6"
+      - key: MBTA_MAX_RETRIES
+        value: "4"
+      - key: MBTA_RETRY_BASE_DELAY_MS
+        value: "500"
+      - key: MBTA_RETRY_MAX_DELAY_MS
+        value: "7500"
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: linelight-redis
+          property: connectionString
+
+  - type: web
+    name: linelight-web
+    env: docker
+    plan: starter
+    branch: main
+    autoDeploy: true
+    dockerfilePath: web/Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: NEXT_PUBLIC_API_BASE_URL
+        fromService:
+          type: web
+          name: linelight-api
+          property: hostUrl

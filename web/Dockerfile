@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1.6
+
+ARG NODE_VERSION=20.11.1
+FROM node:${NODE_VERSION}-alpine AS base
+
+FROM base AS deps
+WORKDIR /app
+COPY web/package.json web/package-lock.json ./web/
+COPY packages ./packages
+RUN cd /app/packages/core && npm install && npm run build
+RUN cd web && npm install
+
+FROM base AS builder
+WORKDIR /app
+COPY web ./web
+COPY --from=deps /app/packages ./packages
+COPY --from=deps /app/web/node_modules ./web/node_modules
+RUN rm -rf /app/web/node_modules/@linelight/core && cp -R /app/packages/core /app/web/node_modules/@linelight/core
+WORKDIR /app/web
+RUN npm run build
+
+FROM base AS runtime
+WORKDIR /app/web
+ENV NODE_ENV=production
+ENV PORT=3000
+EXPOSE 3000
+COPY --from=builder /app/web/.next/standalone ./
+COPY --from=builder /app/web/.next/static ./.next/static
+COPY --from=builder /app/web/public ./public
+CMD ["node", "server.js"]
