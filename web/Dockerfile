@@ -22,9 +22,8 @@ RUN npm run build
 FROM base AS runtime
 WORKDIR /app/web
 ENV NODE_ENV=production
-ENV PORT=3000
 EXPOSE 3000
 COPY --from=builder /app/web/.next/standalone ./
 COPY --from=builder /app/web/.next/static ./.next/static
 COPY --from=builder /app/web/public ./public
-CMD ["node", "server.js"]
+CMD ["sh", "-c", "PORT=${PORT:-3000} node server.js"]
