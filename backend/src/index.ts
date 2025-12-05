@@ -213,6 +213,7 @@ app.get("/api/lines/:lineId/shapes", async (req, res) => {
     if (!payload) {
       return res.status(404).json({ error: "shapes_unavailable", message: "Line shapes not available" });
     }
+    logger.info("Returning line shapes payload", { lineId: req.params.lineId, shapes: payload.shapes.length });
     return res.json(payload);
   } catch (error) {
     logger.error("Failed to fetch line shapes", { lineId: req.params.lineId, message: String(error) });
@@ -226,6 +227,7 @@ app.get("/api/routes/:routeId/shapes", async (req, res) => {
     if (!payload) {
       return res.status(404).json({ error: "shapes_unavailable", message: "Route shapes not available" });
     }
+    logger.info("Returning route shapes payload", { routeId: req.params.routeId, shapes: payload.shapes.length });
     return res.json(payload);
   } catch (error) {
     logger.error("Failed to fetch route shapes", { routeId: req.params.routeId, message: String(error) });

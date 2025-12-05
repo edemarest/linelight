@@ -2,6 +2,7 @@ import type { MbtaCache } from "../cache/mbtaCache";
 import type { Coordinate } from "../models/domain";
 import type { MbtaRoute } from "../models/mbta";
 import type { MbtaClient } from "../mbta/client";
+import { logger } from "../utils/logger";
 import polyline from "@mapbox/polyline";
 
 const formatColor = (value: string | null | undefined): string | null => {
@@ -48,9 +49,13 @@ export const buildLineShapes = async (
   let shapesEntry = cache.getShapes();
   let shapes = shapesEntry?.data.get(lineId);
 
-  if (!shapes || shapes.length === 0) {
+  if (shapes && shapes.length > 0) {
+    logger.info("Line shapes cache hit", { lineId, count: shapes.length });
+  } else {
+    logger.info("Line shapes cache miss — fetching from MBTA", { lineId });
     const fetchedShapes = await fetchShapesForLine(client, lineId);
     if (fetchedShapes.length === 0) {
+      logger.warn("No shapes returned from MBTA for line", { lineId });
       return null;
     }
     const shapeMap = shapesEntry?.data ?? new Map();
@@ -58,6 +63,7 @@ export const buildLineShapes = async (
     cache.setShapes(shapeMap);
     shapesEntry = cache.getShapes();
     shapes = fetchedShapes;
+    logger.info("Fetched line shapes", { lineId, fetchedCount: shapes.length });
   }
 
   const routesEntry = cache.getRoutes();
