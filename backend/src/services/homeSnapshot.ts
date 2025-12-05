@@ -24,6 +24,30 @@ type StationGroup = {
   minDistance: number;
 };
 
+const HOME_CACHE_COORD_PRECISION = 0.0025; // ~275m
+const HOME_CACHE_RADIUS_INCREMENT = 100;
+
+const quantizeCoordinate = (value: number) =>
+  (Math.round(value / HOME_CACHE_COORD_PRECISION) * HOME_CACHE_COORD_PRECISION).toFixed(4);
+
+const quantizeRadius = (meters: number) =>
+  Math.max(HOME_CACHE_RADIUS_INCREMENT, Math.round(meters / HOME_CACHE_RADIUS_INCREMENT) * HOME_CACHE_RADIUS_INCREMENT);
+
+const buildHomeCacheKey = (options: BuildHomeOptions) => {
+  const latBucket = quantizeCoordinate(options.lat);
+  const lngBucket = quantizeCoordinate(options.lng);
+  const radiusBucket = quantizeRadius(options.radiusMeters);
+  const limitBucket = Math.max(1, Math.min(50, options.limit));
+  const favoritesKey =
+    options.favoriteStopIds.length > 0
+      ? options.favoriteStopIds
+          .slice()
+          .sort()
+          .join(",")
+      : "none";
+  return `${latBucket}:${lngBucket}:r${radiusBucket}:l${limitBucket}:f${favoritesKey}`;
+};
+
 const normalizeLabel = (value?: string | null): string | null => {
   if (!value) return null;
   const trimmed = value.trim();
@@ -266,6 +290,12 @@ export const buildHomeSnapshot = async (
   options: BuildHomeOptions,
   deps?: { fetchStopSnapshot?: StopSnapshotFetcher },
 ): Promise<HomeResponse> => {
+  const cacheKey = buildHomeCacheKey(options);
+  const cached = await cache.getHomeSnapshot(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const fetchStopSnapshot = deps?.fetchStopSnapshot ?? getStopEtaSnapshot;
   const stopsEntry = cache.getStops();
   const routesEntry = cache.getRoutes();
@@ -377,9 +407,13 @@ export const buildHomeSnapshot = async (
     }
   });
 
-  return {
+  const response: HomeResponse = {
     favorites: favoriteSummaries,
     nearby: nearbySummaries,
     generatedAt: new Date().toISOString(),
   };
+
+  await cache.setHomeSnapshot(cacheKey, response);
+
+  return response;
 };

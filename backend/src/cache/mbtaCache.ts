@@ -220,6 +220,30 @@ export class MbtaCache {
     return this.shapes;
   }
 
+  public async getHomeSnapshot(key: string): Promise<HomeResponse | null> {
+    const localEntry = this.homeSnapshots.get(key);
+    if (localEntry && this.isEntryFresh(localEntry, TTL_MS.homeSnapshot)) {
+      return localEntry.data;
+    }
+    this.homeSnapshots.delete(key);
+    if (!this.redis || this.redis.status !== "ready") {
+      return null;
+    }
+    const redisEntry = await this.redis.getJson<CacheEntry<HomeResponse>>(`${HOME_SNAPSHOT_PREFIX}${key}`);
+    if (redisEntry && this.isEntryFresh(redisEntry, TTL_MS.homeSnapshot)) {
+      this.homeSnapshots.set(key, redisEntry);
+      return redisEntry.data;
+    }
+    return null;
+  }
+
+  public async setHomeSnapshot(key: string, data: HomeResponse) {
+    const entry = { data, fetchedAt: Date.now() };
+    this.homeSnapshots.set(key, entry);
+    if (!this.redis || this.redis.status !== "ready") return;
+    await this.redis.setJson(`${HOME_SNAPSHOT_PREFIX}${key}`, entry, TTL_MS.homeSnapshot);
+  }
+
   public getHealth(): CacheHealth {
     const predictionsFetchedAt = this.predictions?.fetchedAt ?? null;
     const age = predictionsFetchedAt ? Date.now() - predictionsFetchedAt : null;
