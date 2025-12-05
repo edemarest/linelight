@@ -1,5 +1,6 @@
 import cors from "cors";
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
+import { randomUUID } from "node:crypto";
 import { config } from "./config";
 import { getMbtaClientTelemetry } from "./mbta/client";
 import { initializePolling } from "./polling/startPolling";
@@ -21,6 +22,29 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  const requestId = (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
+  res.locals.requestId = requestId;
+  const start = Date.now();
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    const meta = {
+      requestId,
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      durationMs: duration,
+    };
+    if (res.statusCode >= 500) {
+      logger.error("HTTP request failed", meta);
+    } else if (res.statusCode >= 400) {
+      logger.warn("HTTP request completed with client error", meta);
+    } else {
+      logger.info("HTTP request completed", meta);
+    }
+  });
+  next();
+});
 
 const polling = initializePolling();
 
@@ -158,6 +182,25 @@ app.get("/api/vehicles", (req, res) => {
   const modeFilter = modeParam && isMode(modeParam) ? modeParam : undefined;
   const snapshots = buildVehicleSnapshots(polling.cache, { mode: modeFilter });
   res.json(snapshots);
+});
+
+app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
+  const requestId = res.locals.requestId ?? randomUUID();
+  logger.error("Unhandled error during request", {
+    requestId,
+    method: req.method,
+    path: req.originalUrl,
+    message: error.message,
+    stack: error.stack,
+  });
+  if (res.headersSent) {
+    return;
+  }
+  res.status(500).json({
+    error: "internal_error",
+    message: "Unexpected server error",
+    requestId,
+  });
 });
 
 app.get("/api/lines/:lineId/shapes", async (req, res) => {
