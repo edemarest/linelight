@@ -47,8 +47,6 @@ services:
     dockerContext: .
     healthCheckPath: /
     envVars:
-      - key: PORT
-        value: "3000"
       - key: NEXT_PUBLIC_API_BASE_URL
         fromService:
           type: web
