@@ -24,8 +24,16 @@ type StationGroup = {
   minDistance: number;
 };
 
+type StopTarget = {
+  stop: MbtaStop;
+  distance: number;
+  isFavorite: boolean;
+};
+
 const HOME_CACHE_COORD_PRECISION = 0.01; // ~1.1km
 const HOME_CACHE_RADIUS_INCREMENT = 250;
+const MAX_UNIQUE_STOP_TARGETS = 32;
+const STOP_SNAPSHOT_CONCURRENCY = 4;
 
 const quantizeCoordinate = (value: number) =>
   (Math.round(value / HOME_CACHE_COORD_PRECISION) * HOME_CACHE_COORD_PRECISION).toFixed(4);
@@ -294,6 +302,51 @@ const collectStopsWithinRadius = (
 
 type StopSnapshotFetcher = typeof getStopEtaSnapshot;
 
+const fetchStopSnapshots = async (
+  cache: MbtaCache,
+  client: MbtaClient,
+  targets: StopTarget[],
+  fetchStopSnapshot: StopSnapshotFetcher,
+): Promise<Array<{ stop: MbtaStop; snapshot: BlendedDeparture[] | null }>> => {
+  if (targets.length === 0) return [];
+  const queue = targets.slice();
+  const results: Array<{ stop: MbtaStop; snapshot: BlendedDeparture[] | null }> = [];
+
+  const worker = async () => {
+    while (queue.length > 0) {
+      const target = queue.shift();
+      if (!target) break;
+      const { stop } = target;
+      const cachedSnapshot = getCachedStopEtaSnapshot(cache, stop.id, {
+        maxLookaheadMinutes: 30,
+        minLookaheadMinutes: -2,
+        stopName: stop.attributes.name,
+      });
+      if (cachedSnapshot) {
+        results.push({ stop, snapshot: cachedSnapshot.departures });
+        continue;
+      }
+      try {
+        const snapshot = await fetchStopSnapshot(client, stop.id, {
+          maxLookaheadMinutes: 30,
+          minLookaheadMinutes: -2,
+        });
+        results.push({ stop, snapshot: snapshot.departures });
+      } catch (error) {
+        logger.error("Failed to fetch stop snapshot for home view", {
+          stopId: stop.id,
+          message: String(error),
+        });
+        results.push({ stop, snapshot: null });
+      }
+    }
+  };
+
+  const workerCount = Math.min(STOP_SNAPSHOT_CONCURRENCY, targets.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+};
+
 export const buildHomeSnapshot = async (
   cache: MbtaCache,
   client: MbtaClient,
@@ -342,47 +395,52 @@ export const buildHomeSnapshot = async (
   const favoriteGroupsMap = buildGroupsFromEntries(favoriteEntries, stopLookup, stationChildrenMap);
 
   const etaTargetStopIds = new Set<string>();
-  const addTargetsFromGroup = (group: StationGroup | undefined) => {
+  const stopPriority = new Map<string, { distance: number; isFavorite: boolean }>();
+  const registerGroupTargets = (group: StationGroup | undefined, isFavorite: boolean) => {
     if (!group) return;
-    group.platformStopIds.forEach((stopId) => etaTargetStopIds.add(stopId));
+    group.platformStopIds.forEach((stopId) => {
+      etaTargetStopIds.add(stopId);
+      const existing = stopPriority.get(stopId);
+      const distance = existing ? Math.min(existing.distance, group.minDistance) : group.minDistance;
+      stopPriority.set(stopId, {
+        distance,
+        isFavorite: existing?.isFavorite ? true : isFavorite,
+      });
+    });
   };
-  limitedNearbyGroups.forEach((group) => addTargetsFromGroup(group));
-  favoriteGroupsMap.forEach((group) => addTargetsFromGroup(group));
+  limitedNearbyGroups.forEach((group) => registerGroupTargets(group, false));
+  favoriteGroupsMap.forEach((group) => registerGroupTargets(group, true));
 
   const uniqueStopTargets = Array.from(etaTargetStopIds)
     .map((id) => stopLookup.get(id))
     .filter((stop): stop is MbtaStop => Boolean(stop));
+  const prioritizedTargets: StopTarget[] = uniqueStopTargets
+    .map((stop) => {
+      const priority = stopPriority.get(stop.id);
+      return {
+        stop,
+        distance: priority?.distance ?? Number.POSITIVE_INFINITY,
+        isFavorite: priority?.isFavorite ?? false,
+      };
+    })
+    .sort((a, b) => {
+      if (a.isFavorite !== b.isFavorite) {
+        return a.isFavorite ? -1 : 1;
+      }
+      return a.distance - b.distance;
+    });
 
-  const etaSnapshots = await Promise.all(
-    uniqueStopTargets.map(async (stop) => {
-      const cachedSnapshot = getCachedStopEtaSnapshot(cache, stop.id, {
-        maxLookaheadMinutes: 30,
-        minLookaheadMinutes: -2,
-        stopName: stop.attributes.name,
-      });
-      if (cachedSnapshot) {
-        return { stop, snapshot: cachedSnapshot };
-      }
-      try {
-        const snapshot = await fetchStopSnapshot(client, stop.id, {
-          maxLookaheadMinutes: 30,
-          minLookaheadMinutes: -2,
-        });
-        return { stop, snapshot };
-      } catch (error) {
-        logger.error("Failed to fetch stop snapshot for home view", {
-          stopId: stop.id,
-          message: String(error),
-        });
-        return { stop, snapshot: null };
-      }
-    }),
-  );
+  const favoriteTargets = prioritizedTargets.filter((entry) => entry.isFavorite);
+  const nonFavoriteTargets = prioritizedTargets.filter((entry) => !entry.isFavorite);
+  const maxTargets = Math.max(MAX_UNIQUE_STOP_TARGETS, favoriteTargets.length);
+  const limitedTargets = [...favoriteTargets, ...nonFavoriteTargets].slice(0, maxTargets);
+
+  const etaSnapshots = await fetchStopSnapshots(cache, client, limitedTargets, fetchStopSnapshot);
 
   const snapshotMap = new Map<string, BlendedDeparture[]>();
   etaSnapshots.forEach(({ stop, snapshot }) => {
-    if (snapshot) {
-      snapshotMap.set(stop.id, snapshot.departures);
+    if (snapshot && snapshot.length > 0) {
+      snapshotMap.set(stop.id, snapshot);
     }
   });
 

@@ -9,6 +9,7 @@ import polyline from "@mapbox/polyline";
 import type { MbtaPrediction, MbtaStop, MbtaTrip, MbtaVehicle } from "../models/mbta";
 import { resolveBoardableParent } from "../utils/stationKind";
 import { logger } from "../utils/logger";
+import { buildHomeSnapshot } from "../services/homeSnapshot";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const TARGET_ROUTE_TYPES = [0, 1, 2, 3]; // light rail, heavy rail, commuter rail, bus (inc. Silver Line)
@@ -27,6 +28,36 @@ const FALLBACK_ROUTE_IDS = [
   "743", // SL3
   "CR-Fitchburg",
   "CR-Franklin",
+];
+const HOME_SNAPSHOT_HOTSPOTS: Array<{
+  name: string;
+  lat: number;
+  lng: number;
+  radiusMeters: number;
+  limit: number;
+  favoriteStopIds?: string[];
+}> = [
+  {
+    name: "downtown-crossing",
+    lat: 42.3555,
+    lng: -71.0605,
+    radiusMeters: 1200,
+    limit: 10,
+  },
+  {
+    name: "logan-airport",
+    lat: 42.3656,
+    lng: -71.0096,
+    radiusMeters: 1500,
+    limit: 8,
+  },
+  {
+    name: "harvard-square",
+    lat: 42.3734,
+    lng: -71.1189,
+    radiusMeters: 1200,
+    limit: 10,
+  },
 ];
 
 interface PollingJob {
@@ -259,6 +290,30 @@ const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
         await sleep(120);
       }
       cache.setShapes(routeShapeMap);
+    },
+  },
+  {
+    name: "home-hotspots",
+    intervalMs: 1000 * 45,
+    initialDelayMs: 20000,
+    run: async () => {
+      for (const hotspot of HOME_SNAPSHOT_HOTSPOTS) {
+        try {
+          await buildHomeSnapshot(cache, client, {
+            lat: hotspot.lat,
+            lng: hotspot.lng,
+            radiusMeters: hotspot.radiusMeters,
+            limit: hotspot.limit,
+            favoriteStopIds: hotspot.favoriteStopIds ?? [],
+          });
+        } catch (error) {
+          logger.warn("Failed to warm home hotspot cache", {
+            hotspot: hotspot.name,
+            message: String(error),
+          });
+        }
+        await sleep(150);
+      }
     },
   },
 ];

@@ -18,12 +18,20 @@ import {
 } from "@linelight/core";
 
 const API_BASE_URL = envConfig.apiBaseUrl;
+const HOME_COORD_PRECISION = 0.01;
+const HOME_RADIUS_INCREMENT = 250;
 
 const buildUrl = (path: string): string => {
   const base = API_BASE_URL.replace(/\/+$/, "");
   const suffix = path.startsWith("/") ? path : `/${path}`;
   return `${base}${suffix}`;
 };
+
+const quantizeCoordinate = (value: number) =>
+  Number((Math.round(value / HOME_COORD_PRECISION) * HOME_COORD_PRECISION).toFixed(4));
+
+const quantizeRadius = (meters: number) =>
+  Math.max(HOME_RADIUS_INCREMENT, Math.round(meters / HOME_RADIUS_INCREMENT) * HOME_RADIUS_INCREMENT);
 
 export interface HealthResponse {
   status: string;
@@ -109,7 +117,22 @@ export const fetchHome = (params: {
   lng: number;
   radiusMeters?: number;
   limit?: number;
-}): Promise<HomeResponse> => coreFetchHome(API_BASE_URL, params);
+}): Promise<HomeResponse> => {
+  const normalized: {
+    lat: number;
+    lng: number;
+    radiusMeters?: number;
+    limit?: number;
+  } = {
+    ...params,
+    lat: quantizeCoordinate(params.lat),
+    lng: quantizeCoordinate(params.lng),
+  };
+  if (typeof params.radiusMeters === "number") {
+    normalized.radiusMeters = quantizeRadius(params.radiusMeters);
+  }
+  return coreFetchHome(API_BASE_URL, normalized);
+};
 
 export const fetchStationBoard = (
   stopId: string,
