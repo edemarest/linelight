@@ -14,6 +14,9 @@ services:
       - PORT=4000
       - MBTA_API_BASE_URL=${MBTA_API_BASE_URL:-https://api-v3.mbta.com}
       - MBTA_API_KEY=${MBTA_API_KEY:-}
+      # Increase MBTA rate limit window to 60s and allow up to 1000 requests/minute
+      - MBTA_RATE_LIMIT_WINDOW_MS=${MBTA_RATE_LIMIT_WINDOW_MS:-60000}
+      - MBTA_RATE_LIMIT_MAX_REQUESTS=${MBTA_RATE_LIMIT_MAX_REQUESTS:-1000}
       - REDIS_URL=redis://redis:6379
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - MBTA_RATE_LIMIT_WINDOW_MS=${MBTA_RATE_LIMIT_WINDOW_MS:-10000}

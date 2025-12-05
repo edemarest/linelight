@@ -10,6 +10,7 @@ import type { MbtaPrediction, MbtaStop, MbtaTrip, MbtaVehicle } from "../models/
 import { resolveBoardableParent } from "../utils/stationKind";
 import { logger } from "../utils/logger";
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const TARGET_ROUTE_TYPES = [0, 1, 2, 3]; // light rail, heavy rail, commuter rail, bus (inc. Silver Line)
 const ROUTE_TYPE_FILTER = TARGET_ROUTE_TYPES.join(",");
 const FALLBACK_ROUTE_IDS = [
@@ -164,6 +165,8 @@ const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
               message: String(error),
             });
           }
+          // small spacing to avoid large request bursts to MBTA
+          await sleep(75);
         }
       }
       cache.setStopRouteMap(stopRouteMap);
@@ -181,6 +184,7 @@ const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
           "filter[route]": chunk.join(","),
         });
         vehicles.push(...ensureArray(response.data));
+        await sleep(50);
       }
       cache.setVehicles(vehicles);
     },
@@ -199,6 +203,7 @@ const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
           "page[limit]": 500,
         });
         predictions.push(...ensureArray(response.data));
+        await sleep(60);
       }
       cache.setPredictions(predictions);
     },
@@ -225,6 +230,7 @@ const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
           "page[limit]": 500,
         });
         trips.push(...ensureArray(response.data));
+        await sleep(60);
       }
       cache.setTrips(trips);
     },
@@ -250,6 +256,7 @@ const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
           existing.push(coords);
           routeShapeMap.set(routeId, existing);
         });
+        await sleep(120);
       }
       cache.setShapes(routeShapeMap);
     },

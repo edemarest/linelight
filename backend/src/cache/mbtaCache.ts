@@ -10,6 +10,7 @@ import type {
 import type { Coordinate } from "../models/domain";
 import type { RedisManager } from "./redisClient";
 import { logger } from "../utils/logger";
+import type { HomeResponse } from "@linelight/core";
 
 export interface CacheEntry<T> {
   data: T;
@@ -35,11 +36,13 @@ const CACHE_KEYS = {
   trips: "linelight:cache:trips",
   shapes: "linelight:cache:shapes",
 } as const;
+const HOME_SNAPSHOT_PREFIX = "linelight:cache:home:";
 
 const TTL_MS = {
   predictions: 60_000,
   vehicles: 60_000,
   alerts: 120_000,
+  homeSnapshot: 30_000,
 };
 
 const STALE_PREDICTION_THRESHOLD_MS = 90_000;
@@ -54,6 +57,7 @@ export class MbtaCache {
   private stopRouteMap?: CacheEntry<Map<string, Set<string>>>;
   private trips?: CacheEntry<MbtaTrip[]>;
   private shapes?: CacheEntry<RouteShapeMap>;
+  private homeSnapshots = new Map<string, CacheEntry<HomeResponse>>();
   private readonly redis: RedisManager | undefined;
 
   constructor(redis?: RedisManager) {
@@ -120,6 +124,10 @@ export class MbtaCache {
       };
     }
     void this.redis.setJson(CACHE_KEYS[key], payload, ttlMs);
+  }
+
+  private isEntryFresh(entry: CacheEntry<unknown>, ttlMs: number) {
+    return Date.now() - entry.fetchedAt <= ttlMs;
   }
 
   public setRoutes(data: MbtaRoute[]) {
