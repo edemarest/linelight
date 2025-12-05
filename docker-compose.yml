@@ -10,17 +10,16 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    env_file:
+      - backend/.env
     environment:
       - PORT=4000
       - MBTA_API_BASE_URL=${MBTA_API_BASE_URL:-https://api-v3.mbta.com}
-      - MBTA_API_KEY=${MBTA_API_KEY:-}
       # Increase MBTA rate limit window to 60s and allow up to 1000 requests/minute
       - MBTA_RATE_LIMIT_WINDOW_MS=${MBTA_RATE_LIMIT_WINDOW_MS:-60000}
       - MBTA_RATE_LIMIT_MAX_REQUESTS=${MBTA_RATE_LIMIT_MAX_REQUESTS:-1000}
       - REDIS_URL=redis://redis:6379
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - MBTA_RATE_LIMIT_WINDOW_MS=${MBTA_RATE_LIMIT_WINDOW_MS:-10000}
-      - MBTA_RATE_LIMIT_MAX_REQUESTS=${MBTA_RATE_LIMIT_MAX_REQUESTS:-6}
       - MBTA_MAX_RETRIES=${MBTA_MAX_RETRIES:-4}
       - MBTA_RETRY_BASE_DELAY_MS=${MBTA_RETRY_BASE_DELAY_MS:-500}
       - MBTA_RETRY_MAX_DELAY_MS=${MBTA_RETRY_MAX_DELAY_MS:-7500}
