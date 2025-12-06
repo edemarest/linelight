@@ -18,7 +18,7 @@ import {
   type StationPlatformMarker,
   type StationSummary,
 } from "@/lib/api";
-import type { HomeStopSummary, HomeRouteSummary } from "@linelight/core";
+import type { HomeStopSummary, HomeRouteSummary, HomeResponse } from "@linelight/core";
 import { StopSheetPanel } from "@/components/stop/StopSheetPanel";
 import {
   FiMapPin,
@@ -31,6 +31,7 @@ import {
   FiEdit,
   FiTrash2,
   FiBookmark,
+  FiArrowRight,
   FiHome,
   FiMap,
   FiBarChart2,
@@ -56,6 +57,8 @@ const DEFAULT_POSITION = {
 };
 
 const FOLLOW_RIBBON_HEIGHT = 240;
+const BASE_MAP_PADDING = { top: 40, right: 40, bottom: 40, left: 40 };
+const FOLLOW_SAFE_AREA = FOLLOW_RIBBON_HEIGHT + 80;
 
 const SAVED_LOCATIONS_KEY = "linelight:savedLocations";
 const generateId = () =>
@@ -318,12 +321,14 @@ const StopSummaryCard = ({
   onToggleFavorite,
   onSelectStop,
   selected,
+  isRefreshing = false,
 }: {
   stop: HomeStopSummary;
   isFavorite: boolean;
   onToggleFavorite: (stopId: string) => void;
   onSelectStop: (stopId: string, meta: { name: string; lineIds: string[]; platformStopIds?: string[] }) => void;
   selected: boolean;
+  isRefreshing?: boolean;
 }) => {
   const { mode: themeMode } = useThemeMode();
   const routeGroupMap = new Map<string, { routeId: string; shortName: string; directions: HomeStopSummary["routes"] }>();
@@ -388,10 +393,8 @@ const StopSummaryCard = ({
           }
         >
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-base font-semibold" style={{ color: "var(--foreground)" }}>
-                {stop.name}
-              </p>
+            <div className="min-w-0">
+              <p className="text-base font-semibold truncate">{stop.name}</p>
               <p className="text-xs" style={{ color: "var(--muted)" }}>
                 {formatDistance(stop.distanceMeters)} away
               </p>
@@ -413,6 +416,8 @@ const StopSummaryCard = ({
                 directionEntry.nextTimes.find((eta) => Number.isFinite(eta?.etaMinutes ?? NaN)) ??
                 directionEntry.nextTimes[0] ??
                 null;
+              const hasEta = Number.isFinite(eta?.etaMinutes ?? NaN);
+              const showEtaLoading = isRefreshing || !hasEta;
               return (
                 <div
                   key={`${stop.stopId}-${group.routeId}`}
@@ -437,7 +442,11 @@ const StopSummaryCard = ({
                   </div>
                   <div className="flex items-center gap-2 text-[11px]" style={{ color: "var(--foreground)" }}>
                     <DirectionArrowIcon token={directionToken} size="sm" />
-                    <span className="font-semibold">{formatEtaChip(eta?.etaMinutes ?? null)}</span>
+                    {showEtaLoading ? (
+                      <div className="h-4 w-12 animate-pulse rounded bg-white/40" />
+                    ) : (
+                      <span className="font-semibold">{formatEtaChip(eta?.etaMinutes ?? null)}</span>
+                    )}
                   </div>
                 </div>
               );
@@ -458,7 +467,7 @@ export const HomeShell = () => (
 const HomePanels = ({
   favorites,
   nearby,
-  isLoading,
+  isFetching,
   error,
   favoriteIds,
   onToggleFavorite,
@@ -471,7 +480,7 @@ const HomePanels = ({
 }: {
   favorites: HomeStopSummary[];
   nearby: HomeStopSummary[];
-  isLoading: boolean;
+  isFetching: boolean;
   error: Error | null;
   favoriteIds: string[];
   onToggleFavorite: (stopId: string) => void;
@@ -504,7 +513,7 @@ const HomePanels = ({
     setFavoritesOpen(!isCompactLayout);
     setNearbyOpen(!isCompactLayout);
   }, [isCompactLayout]);
-  if (isLoading) {
+  if (isFetching) {
     return (
       <div className="space-y-6">
         <div className="h-6 w-2/3 animate-pulse rounded-full bg-white/10" />
@@ -583,14 +592,15 @@ const HomePanels = ({
               ) : null
             ) : (
               favoritesToShow.map((stop) => (
-                <StopSummaryCard
-                  key={`fav-${stop.stopId}`}
-                  stop={stop}
-                  isFavorite
-                  onToggleFavorite={onToggleFavorite}
-                  onSelectStop={onSelectStop}
-                  selected={stop.stopId === selectedStopId}
-                />
+        <StopSummaryCard
+          key={`fav-${stop.stopId}`}
+          stop={stop}
+          isFavorite
+          onToggleFavorite={onToggleFavorite}
+          onSelectStop={onSelectStop}
+          selected={stop.stopId === selectedStopId}
+          isRefreshing={isFetching}
+        />
               ))
             )}
           </div>
@@ -650,14 +660,15 @@ const HomePanels = ({
             )
           ) : (
             nearbyToShow.map((stop) => (
-              <StopSummaryCard
-                key={stop.stopId}
-                stop={stop}
-                isFavorite={favoriteIds.includes(stop.stopId)}
-                onToggleFavorite={onToggleFavorite}
-                onSelectStop={onSelectStop}
-                selected={stop.stopId === selectedStopId}
-              />
+        <StopSummaryCard
+          key={stop.stopId}
+          stop={stop}
+          isFavorite={favoriteIds.includes(stop.stopId)}
+          onToggleFavorite={onToggleFavorite}
+          onSelectStop={onSelectStop}
+          selected={stop.stopId === selectedStopId}
+          isRefreshing={isFetching}
+        />
             ))
           )}
         </div>
@@ -673,25 +684,23 @@ const HomePanels = ({
 
 const HomeShellContent = () => {
   const mapRef = useRef<MapRef | null>(null);
+  const mapViewBeforeSheetRef = useRef<{
+    center: [number, number];
+    zoom: number;
+    bearing: number;
+    pitch: number;
+  } | null>(null);
+  const [mapReady, setMapReady] = useState(false);
+  const [isClient, setIsClient] = useState(false);
   const mapSectionRef = useRef<HTMLDivElement | null>(null);
+  const followPanelRef = useRef<HTMLDivElement | null>(null);
   const mapSearchAbortRef = useRef<AbortController | null>(null);
   const [viewState, setViewState] = useState<ViewState>(() => ({
     ...INITIAL_VIEW_STATE,
   }));
   const [position, setPosition] = useState(DEFAULT_POSITION);
-  const [favoriteIds, setFavoriteIds] = useState<string[]>(() => {
-    if (typeof window === "undefined") return [];
-    try {
-      const stored = window.localStorage.getItem("linelight:favorites");
-      if (!stored) return [];
-      const parsed = JSON.parse(stored);
-      return Array.isArray(parsed)
-        ? parsed.filter((id): id is string => typeof id === "string")
-        : [];
-    } catch {
-      return [];
-    }
-  });
+  const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
+  const [favoriteIdsLoaded, setFavoriteIdsLoaded] = useState(false);
   const [manualLat, setManualLat] = useState(() => DEFAULT_POSITION.lat.toFixed(5));
   const [manualLng, setManualLng] = useState(() => DEFAULT_POSITION.lng.toFixed(5));
   const [showAdvancedCoords, setShowAdvancedCoords] = useState(false);
@@ -716,32 +725,18 @@ const HomeShellContent = () => {
   const [busRouteShapes, setBusRouteShapes] = useState<LineShapeResponse[]>([]);
   const breakpointInfo = useBreakpoint();
   const { isDesktop } = breakpointInfo;
+  const getMapPadding = useCallback(
+    (following: boolean) => ({
+      top: BASE_MAP_PADDING.top + (following ? FOLLOW_SAFE_AREA / 2 : 0),
+      bottom: BASE_MAP_PADDING.bottom + (following ? FOLLOW_SAFE_AREA / 2 : 0),
+      left: BASE_MAP_PADDING.left,
+      right: BASE_MAP_PADDING.right,
+    }),
+    [],
+  );
   const layoutBreakpoint = breakpointClass(breakpointInfo);
-  const [savedLocations, setSavedLocations] = useState<SavedLocation[]>(() => {
-    if (typeof window === "undefined") return [];
-    try {
-      const raw = window.localStorage.getItem(SAVED_LOCATIONS_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      const cleaned: SavedLocation[] = [];
-      parsed.forEach((entry) => {
-        if (!entry || typeof entry !== "object") return;
-        if (typeof entry.lat !== "number" || typeof entry.lng !== "number") return;
-        cleaned.push({
-          id: typeof entry.id === "string" ? entry.id : generateId(),
-          name: typeof entry.name === "string" ? entry.name : "Saved location",
-          lat: entry.lat,
-          lng: entry.lng,
-          stopId: typeof entry.stopId === "string" ? entry.stopId : null,
-          lines: Array.isArray(entry.lines) ? toLineOptionIds(entry.lines) : null,
-        });
-      });
-      return cleaned;
-    } catch {
-      return [];
-    }
-  });
+  const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([]);
+  const [savedLocationsLoaded, setSavedLocationsLoaded] = useState(false);
   const [isSavingLocation, setIsSavingLocation] = useState(false);
   const [newLocationName, setNewLocationName] = useState("");
   const [newLocationIncludeLines, setNewLocationIncludeLines] = useState(false);
@@ -758,13 +753,22 @@ const HomeShellContent = () => {
   const followPanelTokens = useMemo(() => {
     if (themeMode === "dark") {
       return {
-        background: "rgba(15,23,42,0.85)",
-        border: "rgba(148,163,184,0.35)",
+        background: "rgba(10,17,30,0.92)",
+        border: "rgba(94,234,212,0.3)",
         text: "#f8fafc",
-        subtext: "rgba(226,232,240,0.8)",
-        card: "rgba(2,6,23,0.65)",
+        subtext: "rgba(203,213,225,0.9)",
+        card: "rgba(13,22,38,0.85)",
         cardBorder: "rgba(148,163,184,0.25)",
-        nextBadge: "rgba(94,234,212,0.2)",
+        cardAccent: "linear-gradient(135deg, rgba(14,165,233,0.3), rgba(59,130,246,0.1))",
+        cardAccentBorder: "rgba(125,211,252,0.7)",
+        cardShadow: "0 18px 32px rgba(7,25,43,0.45)",
+        cardShadowMuted: "0 12px 24px rgba(2,6,23,0.45)",
+        stopName: "#e2e8f0",
+        etaText: "#f8fafc",
+        etaSubtext: "rgba(148,163,184,0.85)",
+        nextIconBackground: "rgba(56,189,248,0.25)",
+        nextIconBorder: "rgba(14,165,233,0.65)",
+        nextIconColor: "#fdfdfd",
       };
     }
     return {
@@ -774,21 +778,83 @@ const HomeShellContent = () => {
       subtext: "rgba(71,85,105,0.9)",
       card: "rgba(248,250,252,0.95)",
       cardBorder: "rgba(148,163,184,0.4)",
-      nextBadge: "rgba(14,165,233,0.15)",
+      cardAccent: "linear-gradient(135deg, rgba(14,165,233,0.18), rgba(248,250,252,1))",
+      cardAccentBorder: "rgba(59,130,246,0.45)",
+      cardShadow: "0 14px 26px rgba(14,116,144,0.18)",
+      cardShadowMuted: "0 10px 20px rgba(15,23,42,0.12)",
+      stopName: "#0f172a",
+      etaText: "#0f172a",
+      etaSubtext: "rgba(71,85,105,0.85)",
+      nextIconBackground: "rgba(14,165,233,0.2)",
+      nextIconBorder: "rgba(14,165,233,0.45)",
+      nextIconColor: "#0369a1",
     };
   }, [themeMode]);
+  const stopSheetSafeRefs = useMemo(() => [followPanelRef], [followPanelRef]);
 
   useEffect(() => {
-    localStorage.setItem("linelight:favorites", JSON.stringify(favoriteIds));
-  }, [favoriteIds]);
+    setIsClient(true);
+  }, []);
 
   useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem("linelight:favorites");
+      if (!stored) return;
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        setFavoriteIds(parsed.filter((id): id is string => typeof id === "string"));
+      }
+    } catch {
+      // ignore
+    } finally {
+      setFavoriteIdsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!favoriteIdsLoaded) return;
+    try {
+      window.localStorage.setItem("linelight:favorites", JSON.stringify(favoriteIds));
+    } catch {
+      // ignore
+    }
+  }, [favoriteIds, favoriteIdsLoaded]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SAVED_LOCATIONS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const cleaned: SavedLocation[] = [];
+      parsed.forEach((entry) => {
+        if (!entry || typeof entry !== "object") return;
+        if (typeof entry.lat !== "number" || typeof entry.lng !== "number") return;
+        cleaned.push({
+          id: typeof entry.id === "string" ? entry.id : generateId(),
+          name: typeof entry.name === "string" ? entry.name : "Saved location",
+          lat: entry.lat,
+          lng: entry.lng,
+          stopId: typeof entry.stopId === "string" ? entry.stopId : null,
+          lines: Array.isArray(entry.lines) ? toLineOptionIds(entry.lines) : null,
+        });
+      });
+      setSavedLocations(cleaned);
+    } catch {
+      // ignore
+    } finally {
+      setSavedLocationsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!savedLocationsLoaded) return;
     try {
       window.localStorage.setItem(SAVED_LOCATIONS_KEY, JSON.stringify(savedLocations));
     } catch {
       // ignore
     }
-  }, [savedLocations]);
+  }, [savedLocations, savedLocationsLoaded]);
 
   useEffect(() => {
     const query = mapSearchQuery.trim();
@@ -842,7 +908,7 @@ const HomeShellContent = () => {
   }, [mapSearchQuery]);
 
 
-  const homeQuery = useQuery({
+  const homeQuery = useQuery<HomeResponse, Error>({
     queryKey: ["home", position],
     queryFn: () =>
       fetchHome({
@@ -852,6 +918,8 @@ const HomeShellContent = () => {
         limit: 12,
       }),
     retry: false,
+    refetchInterval: 30_000,
+    placeholderData: (previousData) => previousData,
   });
 
   const lineShapesQuery = useQuery({
@@ -885,6 +953,17 @@ const HomeShellContent = () => {
   const clearMapFocus = useCallback(() => {
     requestMapFocus(null);
   }, [requestMapFocus]);
+  const captureMapView = useCallback(() => {
+    const mapInstance = mapRef.current?.getMap?.();
+    if (!mapInstance) return;
+    const center = mapInstance.getCenter();
+    mapViewBeforeSheetRef.current = {
+      center: [center.lng, center.lat],
+      zoom: mapInstance.getZoom(),
+      bearing: mapInstance.getBearing(),
+      pitch: mapInstance.getPitch(),
+    };
+  }, []);
 
   const buildStopFocusPoints = useCallback(
     (lat?: number, lng?: number, lineIds?: string[]) => {
@@ -927,7 +1006,7 @@ const HomeShellContent = () => {
   );
 
   const focusOnMapPoints = useCallback((points: FocusPoint[]) => {
-    if (!mapRef.current || points.length === 0) return;
+    if (!mapReady || !mapRef.current || points.length === 0) return;
     const latitudes = points.map((point) => point.lat);
     const longitudes = points.map((point) => point.lng);
     const minLat = Math.min(...latitudes);
@@ -956,7 +1035,7 @@ const HomeShellContent = () => {
         duration: 800,
       });
     }
-  }, []);
+  }, [mapReady]);
 
   useEffect(() => {
     if (!mapFocusRequest) {
@@ -1074,32 +1153,29 @@ const HomeShellContent = () => {
 
   const centerMapOnCoordinates = useCallback(
     (lat: number, lng: number, zoom = 14) => {
-      if (mapRef.current) {
-        try {
-          mapRef.current.flyTo({ center: [lng, lat], zoom, duration: 900 });
-        } catch {
-          // ignore fly errors
-        }
+      if (!mapReady || !mapRef.current) return;
+      try {
+        mapRef.current.flyTo({ center: [lng, lat], zoom, duration: 900 });
+      } catch {
+        // ignore fly errors
       }
     },
-    [],
+    [mapReady],
   );
 
   useEffect(() => {
+    if (!mapReady) return;
     const mapInstance = mapRef.current?.getMap?.();
-    if (!mapInstance) return;
-    const basePadding = { top: 40, right: 40, left: 40, bottom: 40 };
-    if (activeTripId) {
-      mapInstance.setPadding({
-        ...basePadding,
-        bottom: FOLLOW_RIBBON_HEIGHT + 80,
-      });
-    } else {
-      mapInstance.setPadding(basePadding);
+    const padding = getMapPadding(Boolean(activeTripId));
+    if (mapInstance) {
+      mapInstance.setPadding(padding);
+      mapInstance.resize();
     }
-  }, [activeTripId]);
+    setViewState((prev) => ({ ...prev, padding }));
+  }, [activeTripId, getMapPadding, mapReady]);
 
   useEffect(() => {
+    if (!mapReady) return;
     if (!activeTripId || !vehiclePosition || vehiclePosition.lat == null || vehiclePosition.lng == null) {
       return;
     }
@@ -1117,7 +1193,6 @@ const HomeShellContent = () => {
       map.flyTo({
         center: [vehiclePosition.lng, vehiclePosition.lat],
         zoom: Math.max(viewState.zoom, 15),
-        offset: [0, activeTripId ? -FOLLOW_RIBBON_HEIGHT / 2 : 0],
         duration: hasPrevious ? 500 : 0,
         essential: true,
       });
@@ -1125,7 +1200,7 @@ const HomeShellContent = () => {
       // ignore fly animation errors
     }
     lastVehicleLocationRef.current = { lat: vehiclePosition.lat, lng: vehiclePosition.lng };
-  }, [activeTripId, vehiclePosition, viewState.zoom]);
+  }, [activeTripId, mapReady, vehiclePosition, viewState.zoom]);
 
   const handleJumpToStop = useCallback(
     (stopId: string) => {
@@ -1309,12 +1384,17 @@ const HomeShellContent = () => {
   }, [activeTripId, followFocusStopSet, normalizedSearch, selectedLines, stationsData, selectedStopId, themeMode]);
 
   const vehicleIsBus = routeLooksLikeBus(tripTrackQuery.data?.routeId);
+  const vehicleMarkerAccent = themeMode === "dark" ? "#38bdf8" : "#0ea5e9";
+  const vehicleMarkerGlow = themeMode === "dark" ? "rgba(56,189,248,0.5)" : "rgba(14,165,233,0.45)";
+  const vehicleMarkerHalo = themeMode === "dark" ? "rgba(8,47,73,0.55)" : "rgba(125,211,252,0.35)";
+  const vehicleMarkerCore = themeMode === "dark" ? "#020617" : "#f8fafc";
   const isFollowingTrip = Boolean(activeTripId);
   const preferStackedLayout = isFollowingTrip || !isDesktop;
-  const layoutBaseClass = "mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 sm:px-6 py-6";
+  const layoutBaseClass = "mx-auto grid w-full max-w-6xl flex-1 gap-6 px-4 sm:px-6 py-6";
   const stackedLayoutClass = layoutBaseClass;
-  const splitLayoutClass = `${layoutBaseClass} lg:grid lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start lg:gap-8`;
+  const splitLayoutClass = `${layoutBaseClass} lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start`;
   const layoutClass = preferStackedLayout ? stackedLayoutClass : splitLayoutClass;
+  const mapPanelHeight = preferStackedLayout ? "460px" : "min(900px, calc(100vh - 220px))";
 
   const favoriteStops = useMemo(() => {
     if (!homeData) return [];
@@ -1342,9 +1422,39 @@ const HomeShellContent = () => {
   );
   const greenDrawerCollapsedWidth = 40;
   const greenDrawerFullWidth = greenDrawerCollapsedWidth + greenLineOptions.length * 32 + 44;
+  const restoreMapView = useCallback(() => {
+    const snapshot = mapViewBeforeSheetRef.current;
+    mapViewBeforeSheetRef.current = null;
+    if (!snapshot) return;
+    const mapInstance = mapRef.current;
+    if (!mapInstance) return;
+    try {
+      mapInstance.flyTo({
+        center: snapshot.center,
+        zoom: snapshot.zoom,
+        bearing: snapshot.bearing,
+        pitch: snapshot.pitch,
+        duration: 650,
+        essential: true,
+      });
+    } catch {
+      try {
+        mapInstance.jumpTo({
+          center: snapshot.center,
+          zoom: snapshot.zoom,
+          bearing: snapshot.bearing,
+          pitch: snapshot.pitch,
+        });
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
   const startFollowingTrip = useCallback(
     (tripId: string | null) => {
       if (!tripId) return;
+      mapViewBeforeSheetRef.current = null;
       setFollowResumeContext({
         stopId: selectedStopId,
         name: selectedStopName,
@@ -1469,7 +1579,7 @@ const HomeShellContent = () => {
   }, [isDesktop]);
 
   const recenterMap = useCallback(() => {
-    if (!stationsData || stationsData.length === 0 || !mapRef.current) return;
+    if (!mapReady || !stationsData || stationsData.length === 0 || !mapRef.current) return;
     const closestStations = [...stationsData]
       .map((station) => ({
         station,
@@ -1504,7 +1614,7 @@ const HomeShellContent = () => {
       });
     }
     setHasCenteredMap(true);
-  }, [position.lat, position.lng, stationsData]);
+  }, [mapReady, position.lat, position.lng, stationsData]);
 
   useEffect(() => {
     setHasCenteredMap(false);
@@ -1513,10 +1623,11 @@ const HomeShellContent = () => {
   }, [position.lat, position.lng]);
 
   useEffect(() => {
+    if (!mapReady) return;
     if (!hasCenteredMap && stationsData && stationsData.length > 0) {
       recenterMap();
     }
-  }, [hasCenteredMap, recenterMap, stationsData]);
+  }, [hasCenteredMap, mapReady, recenterMap, stationsData]);
 
   useEffect(() => {
     if (!activeTripId || !tripTrackQuery.data?.vehicle) return;
@@ -1531,7 +1642,7 @@ const HomeShellContent = () => {
       }
     });
     if (targets.length === 0) return;
-    if (!mapRef.current) return;
+    if (!mapReady || !mapRef.current) return;
     
     const latitudes = targets.map((point) => point.lat);
     const longitudes = targets.map((point) => point.lng);
@@ -1551,7 +1662,7 @@ const HomeShellContent = () => {
         duration: 800,
       });
     }
-  }, [activeTripId, stationsData, tripTrackQuery.data]);
+  }, [activeTripId, mapReady, stationsData, tripTrackQuery.data]);
 
   const handleMapClick = useCallback(
     (evt: MapLayerMouseEvent) => {
@@ -1582,6 +1693,9 @@ const HomeShellContent = () => {
       meta?: { lat?: number; lng?: number; name?: string; lineIds?: string[]; platformStopIds?: string[] },
     ) => {
       if (!stopId) return;
+      if (!isStopSheetOpen) {
+        captureMapView();
+      }
       setSelectedStopId(stopId);
       setIsStopSheetOpen(true);
       if (meta?.name) {
@@ -1607,7 +1721,19 @@ const HomeShellContent = () => {
         clearMapFocus();
       }
     },
-    [setIsStopSheetOpen, setSelectedLines, setSelectedStopId, setSelectedStopName, setSelectedPlatformStopIds, stationLookup, buildStopFocusPoints, requestMapFocus, clearMapFocus],
+    [
+      setIsStopSheetOpen,
+      setSelectedLines,
+      setSelectedStopId,
+      setSelectedStopName,
+      setSelectedPlatformStopIds,
+      stationLookup,
+      buildStopFocusPoints,
+      requestMapFocus,
+      clearMapFocus,
+      isStopSheetOpen,
+      captureMapView,
+    ],
   );
 
   const saveCurrentLocation = useCallback(
@@ -1711,7 +1837,8 @@ const HomeShellContent = () => {
     setSelectedPlatformStopIds(null);
     setBusRouteShapes([]);
     clearMapFocus();
-  }, [setIsStopSheetOpen, setSelectedStopId, setSelectedPlatformStopIds, clearMapFocus]);
+    restoreMapView();
+  }, [setIsStopSheetOpen, setSelectedStopId, setSelectedPlatformStopIds, clearMapFocus, restoreMapView]);
 
   const stopFollowingTrip = useCallback(() => {
     setActiveTripId(null);
@@ -1863,57 +1990,62 @@ const HomeShellContent = () => {
           </svg>
         </div>
         {!isFollowingTrip && (
-        <div className="w-full space-y-5 lg:w-[340px] lg:shrink-0 lg:space-y-5 lg:sticky lg:top-6 lg:pr-1">
-          <div className="surface px-6 py-5">
-            <div className="flex items-center justify-between gap-2">
-              <p className="heading-label" style={{ color: "var(--muted)" }}>
-                Filter stops or lines
-              </p>
-              <span className="text-[11px] uppercase tracking-wide" style={{ color: "var(--muted)" }}>
-                Favorites & Nearby
-              </span>
-            </div>
-            <div className="mt-3">
-              <div className="flex items-center">
-                  <FiSearch className="pointer-events-none mr-3 text-[color:var(--muted)]" />
-                  <input
-                    value={stopSearch}
-                    onChange={(evt) => setStopSearch(evt.target.value)}
-                    placeholder="Government Center, Red, Bus 1…"
-                    className="input flex-1 pr-4"
-                    aria-label="Search favorites and nearby stops"
-                  />
+          <aside className="w-full space-y-5 lg:w-[340px] lg:shrink-0 lg:space-y-5 lg:sticky lg:top-6 lg:pr-1 lg:self-start">
+              <div className="surface px-6 py-5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="heading-label" style={{ color: "var(--muted)" }}>
+                    Filter stops or lines
+                  </p>
+                  <span className="text-[11px] uppercase tracking-wide" style={{ color: "var(--muted)" }}>
+                    Favorites & Nearby
+                  </span>
                 </div>
-            </div>
-          </div>
-            <HomePanels
-              favorites={filteredFavorites}
-              nearby={filteredNearby}
-              isLoading={homeQuery.isLoading}
-              error={homeError}
-              favoriteIds={favoriteIds}
-              onToggleFavorite={toggleFavorite}
-              onSelectStop={(stopId, meta) => {
-                const station = stationLookup.get(stopId);
-                handleSelectStop(stopId, {
-                  name: meta.name,
-                  lineIds: meta.lineIds,
-                  platformStopIds: meta.platformStopIds,
-                  lat: station?.latitude,
-                  lng: station?.longitude,
-                });
-              }}
-              selectedStopId={selectedStopId}
-              favoritesFilteredOut={favoritesFilteredOut}
-              nearbyFilteredOut={nearbyFilteredOut}
-              filtersActive={filtersActive}
-              isCompactLayout={!isDesktop}
-            />
-        </div>
+                <div className="mt-3">
+                  <div className="flex items-center">
+                    <FiSearch className="pointer-events-none mr-3 text-[color:var(--muted)]" />
+                    <input
+                      value={stopSearch}
+                      onChange={(evt) => setStopSearch(evt.target.value)}
+                      placeholder="Government Center, Red, Bus 1…"
+                      className="input flex-1 pr-4"
+                      aria-label="Search favorites and nearby stops"
+                    />
+                  </div>
+                </div>
+              </div>
+              <HomePanels
+                favorites={filteredFavorites}
+                nearby={filteredNearby}
+                isFetching={homeQuery.isFetching}
+                error={homeError}
+                favoriteIds={favoriteIds}
+                onToggleFavorite={toggleFavorite}
+                onSelectStop={(stopId, meta) => {
+                  const station = stationLookup.get(stopId);
+                  handleSelectStop(stopId, {
+                    name: meta.name,
+                    lineIds: meta.lineIds,
+                    platformStopIds: meta.platformStopIds,
+                    lat: station?.latitude,
+                    lng: station?.longitude,
+                  });
+                }}
+                selectedStopId={selectedStopId}
+                favoritesFilteredOut={favoritesFilteredOut}
+                nearbyFilteredOut={nearbyFilteredOut}
+                filtersActive={filtersActive}
+                isCompactLayout={!isDesktop}
+              />
+          </aside>
         )}
-          <div className="flex-1 space-y-5">
-          <div ref={mapSectionRef} className="panel" style={{ position: "relative" }}>
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between" style={{ position: "relative", zIndex: 20 }}>
+        <section className="flex min-w-0 flex-col space-y-5">
+            <div
+              ref={mapSectionRef}
+              className={`panel ${isFollowingTrip ? "!p-0" : ""}`}
+              style={{ position: "relative" }}
+            >
+              {!isFollowingTrip && (
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between" style={{ position: "relative", zIndex: 20 }}>
               <div>
                 <p className="heading-label" style={{ color: "var(--muted)" }}>
                   Map spotlight
@@ -2063,6 +2195,8 @@ const HomeShellContent = () => {
                 </div>
               </div>
             </div>
+          )}
+          {!isFollowingTrip && (
             <div className="mt-4 flex w-full flex-col gap-4 lg:flex-row lg:items-start">
               <div className="flex-1 min-w-[260px]">
                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -2297,193 +2431,218 @@ const HomeShellContent = () => {
                 )}
               </div>
             </div>
-          </div>
-          <div className="relative min-h-[360px] overflow-hidden rounded-2xl border lg:h-[520px]" style={{ borderColor: "var(--border)", zIndex: 50 }}>
-            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
-              <div className="map-center-target" />
-            </div>
-            <div className="absolute right-4 top-4 z-30 flex flex-col gap-2">
-              <button
-                type="button"
-                onClick={handleUseDeviceLocation}
-                className="icon-button focus-outline text-lg"
-                aria-label="Use my location"
-                title="Use my location"
-              >
-                <FiMapPin />
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowBusStops((prev) => !prev)}
-                className={`icon-button focus-outline text-lg ${showBusStops ? "" : ""}`}
-                aria-pressed={showBusStops}
-                aria-label="Toggle bus stops"
-                title="Toggle bus stops"
-                style={{
-                  borderColor: showBusStops ? "rgba(250,204,21,0.8)" : "var(--border)",
-                  color: showBusStops ? "#b45309" : "var(--foreground)",
-                }}
-              >
-                <BusIcon className="h-4 w-4" color={showBusStops ? "#fbbf24" : "#facc15"} />
-              </button>
-              <button
-                type="button"
-                onClick={() => recenterMap()}
-                className="icon-button focus-outline text-lg"
-                disabled={stationsLoading}
-                aria-label="Recenter map"
-                title="Recenter map"
-              >
-                <FiCrosshair />
-              </button>
-            </div>
-            <MapGL
-              ref={mapRef}
-              reuseMaps
-              mapLib={maplibregl}
-              mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
-              style={{ width: "100%", height: "100%" }}
-              initialViewState={viewState}
-              onMove={(evt) => setViewState(evt.viewState as ViewState)}
-              onClick={handleMapClick}
-            >
-              {viewState.latitude != null && viewState.longitude != null && (
-                <DeckGL
-                  style={{ position: "absolute", inset: "0", pointerEvents: "none" }}
-                  layers={[...pathLayers, ...busRouteLayers]}
-                  viewState={viewState}
-                  controller={false}
-                />
-              )}
-              {stationMarkers.map((marker) => (
-                <Marker key={marker.markerKey} latitude={marker.latitude} longitude={marker.longitude}>
+          )}
+          <div
+            className={`${isFollowingTrip ? "" : "mt-4"} relative w-full min-w-0 overflow-hidden rounded-2xl border`}
+            style={{ borderColor: "var(--border)", zIndex: 50, height: mapPanelHeight, minHeight: "360px" }}
+          >
+            {!isClient ? (
+              <div className="flex h-full w-full items-center justify-center text-sm" style={{ color: "var(--muted)" }}>
+                Initializing map…
+              </div>
+            ) : (
+              <>
+                <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+                  <div className="map-center-target" />
+                </div>
+                <div className="absolute right-4 top-4 z-30 flex flex-col gap-2">
                   <button
                     type="button"
-                    className={`focus-outline ${
-                      marker.isBusOnly ? "h-2.5 w-2.5" : "h-4 w-4"
-                    } rounded-full border-2 transition-all duration-200 ${
-                      marker.isSelected
-                        ? "scale-150 border-cyan-300 map-marker-selected"
-                        : hoveredMarkerId === marker.markerStopId
-                          ? "scale-125 border-cyan-200"
-                          : "border-white/30"
-                    }`}
-                    style={{
-                      background: marker.dotStyle?.backgroundColor ?? marker.color,
-                      backgroundImage: marker.dotStyle?.backgroundImage,
-                      backgroundSize: marker.dotStyle?.backgroundSize,
-                      cursor: "pointer",
-                      boxShadow:
-                        hoveredMarkerId === marker.markerStopId
-                          ? "0 0 10px rgba(34,211,238,0.45)"
-                          : "0 2px 6px rgba(0,0,0,0.5)",
-                      zIndex: marker.zIndex,
-                    }}
-                    onPointerDown={(evt) => {
-                      evt.preventDefault();
-                      evt.stopPropagation();
-                    }}
-                    onPointerUp={(evt) => {
-                      evt.preventDefault();
-                      evt.stopPropagation();
-                    }}
-                    onPointerMove={(evt) => {
-                      evt.preventDefault();
-                      evt.stopPropagation();
-                    }}
-                    onMouseEnter={() => setHoveredMarkerId(marker.markerStopId)}
-                    onMouseLeave={() => setHoveredMarkerId((prev) => (prev === marker.markerStopId ? null : prev))}
-                    onClick={(evt) => {
-                      evt.preventDefault();
-                      evt.stopPropagation();
-                      handleSelectStop(marker.stopId, {
-                        lat: marker.latitude,
-                        lng: marker.longitude,
-                        name: marker.name,
-                        lineIds: marker.routesServing,
-                        platformStopIds: marker.platformStopIds,
-                      });
-                    }}
-                    aria-label={`View ${marker.name}`}
-                    aria-pressed={marker.isSelected}
-                    aria-current={marker.isSelected ? "true" : undefined}
-                    data-stop-id={marker.stopId}
-                    title={marker.name}
-                  />
-                </Marker>
-              ))}
-              {savedLocations.map((location) => (
-                <Marker key={`saved-${location.id}`} latitude={location.lat} longitude={location.lng}>
-                  <div className="relative flex flex-col items-center">
-                    <button
-                      type="button"
-                      className="focus-outline flex h-6 w-6 items-center justify-center rounded-full border-2 text-xs font-semibold shadow-lg"
-                      style={{
-                        borderColor: "var(--accent)",
-                        background: "var(--background)",
-                        color: "var(--accent)",
-                      }}
-                      onClick={() => jumpToSavedLocation(location)}
-                      onMouseEnter={() => setHoveredSavedLocationId(location.id)}
-                      onMouseLeave={() => setHoveredSavedLocationId((prev) => (prev === location.id ? null : prev))}
-                      onFocus={() => setHoveredSavedLocationId(location.id)}
-                      onBlur={() => setHoveredSavedLocationId((prev) => (prev === location.id ? null : prev))}
-                      aria-label={`Go to saved location ${location.name}`}
-                      title={location.name}
-                    >
-                      <FiBookmark />
-                    </button>
-                    <span
-                      className="pointer-events-none absolute top-[-0.35rem] -translate-y-full whitespace-nowrap rounded-full border px-2 py-0.5 text-xs shadow transition-all"
-                      style={{
-                        borderColor: "var(--border)",
-                        background: "var(--card)",
-                        color: "var(--foreground)",
-                        opacity: hoveredSavedLocationId === location.id ? 1 : 0,
-                        transform:
-                          hoveredSavedLocationId === location.id
-                            ? "translate(-50%, -110%) scale(1)"
-                            : "translate(-50%, -80%) scale(0.95)",
-                      }}
-                    >
-                      {location.name}
-                    </span>
-                  </div>
-                </Marker>
-              ))}
-              {activeTripId &&
-                tripTrackQuery.data?.vehicle?.position?.lat != null &&
-                tripTrackQuery.data.vehicle.position.lng != null && (
-                  <Marker
-                    latitude={tripTrackQuery.data.vehicle.position.lat}
-                    longitude={tripTrackQuery.data.vehicle.position.lng}
+                    onClick={handleUseDeviceLocation}
+                    className="icon-button focus-outline text-lg"
+                    aria-label="Use my location"
+                    title="Use my location"
                   >
-                    <div
-                      className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-white/60 bg-slate-900/90 text-white shadow-2xl ring-2 ring-cyan-300/60"
-                      title="Tracked vehicle"
-                    >
-                      {vehicleIsBus ? <BusIcon className="h-5 w-5" color="#fef9c3" /> : <TrainIcon className="h-5 w-5" color="#fee2e2" />}
-                    </div>
-                  </Marker>
+                    <FiMapPin />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowBusStops((prev) => !prev)}
+                    className={`icon-button focus-outline text-lg ${showBusStops ? "" : ""}`}
+                    aria-pressed={showBusStops}
+                    aria-label="Toggle bus stops"
+                    title="Toggle bus stops"
+                    style={{
+                      borderColor: showBusStops ? "rgba(250,204,21,0.8)" : "var(--border)",
+                      color: showBusStops ? "#b45309" : "var(--foreground)",
+                    }}
+                  >
+                    <BusIcon className="h-4 w-4" color={showBusStops ? "#fbbf24" : "#facc15"} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => recenterMap()}
+                    className="icon-button focus-outline text-lg"
+                    disabled={stationsLoading}
+                    aria-label="Recenter map"
+                    title="Recenter map"
+                  >
+                    <FiCrosshair />
+                  </button>
+                </div>
+                <MapGL
+                  ref={mapRef}
+                  reuseMaps
+                  mapLib={maplibregl}
+                  mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+                  style={{ width: "100%", height: "100%" }}
+                  initialViewState={viewState}
+                  onMove={(evt) => setViewState(evt.viewState as ViewState)}
+                  onLoad={() => setMapReady(true)}
+                  onClick={handleMapClick}
+                >
+                  {viewState.latitude != null && viewState.longitude != null && (
+                    <DeckGL
+                      style={{ position: "absolute", inset: "0", pointerEvents: "none" }}
+                      layers={[...pathLayers, ...busRouteLayers]}
+                      viewState={viewState}
+                      controller={false}
+                    />
+                  )}
+                  {stationMarkers.map((marker) => (
+                    <Marker key={marker.markerKey} latitude={marker.latitude} longitude={marker.longitude}>
+                      <button
+                        type="button"
+                        className={`focus-outline ${
+                          marker.isBusOnly ? "h-2.5 w-2.5" : "h-4 w-4"
+                        } rounded-full border-2 transition-all duration-200 ${
+                          marker.isSelected
+                            ? "scale-150 border-cyan-300 map-marker-selected"
+                            : hoveredMarkerId === marker.markerStopId
+                              ? "scale-125 border-cyan-200"
+                              : "border-white/30"
+                        }`}
+                        style={{
+                          background: marker.dotStyle?.backgroundColor ?? marker.color,
+                          backgroundImage: marker.dotStyle?.backgroundImage,
+                          backgroundSize: marker.dotStyle?.backgroundSize,
+                          cursor: "pointer",
+                          boxShadow:
+                            hoveredMarkerId === marker.markerStopId
+                              ? "0 0 10px rgba(34,211,238,0.45)"
+                              : "0 2px 6px rgba(0,0,0,0.5)",
+                          zIndex: marker.zIndex,
+                        }}
+                        onPointerDown={(evt) => {
+                          evt.preventDefault();
+                          evt.stopPropagation();
+                        }}
+                        onPointerUp={(evt) => {
+                          evt.preventDefault();
+                          evt.stopPropagation();
+                        }}
+                        onPointerMove={(evt) => {
+                          evt.preventDefault();
+                          evt.stopPropagation();
+                        }}
+                        onMouseEnter={() => setHoveredMarkerId(marker.markerStopId)}
+                        onMouseLeave={() => setHoveredMarkerId((prev) => (prev === marker.markerStopId ? null : prev))}
+                        onClick={(evt) => {
+                          evt.preventDefault();
+                          evt.stopPropagation();
+                          handleSelectStop(marker.stopId, {
+                            lat: marker.latitude,
+                            lng: marker.longitude,
+                            name: marker.name,
+                            lineIds: marker.routesServing,
+                            platformStopIds: marker.platformStopIds,
+                          });
+                        }}
+                        aria-label={`View ${marker.name}`}
+                        aria-pressed={marker.isSelected}
+                        aria-current={marker.isSelected ? "true" : undefined}
+                        data-stop-id={marker.stopId}
+                        title={marker.name}
+                      />
+                    </Marker>
+                  ))}
+                  {savedLocations.map((location) => (
+                    <Marker key={`saved-${location.id}`} latitude={location.lat} longitude={location.lng}>
+                      <div className="relative flex flex-col items-center">
+                        <button
+                          type="button"
+                          className="focus-outline flex h-6 w-6 items-center justify-center rounded-full border-2 text-xs font-semibold shadow-lg"
+                          style={{
+                            borderColor: "var(--accent)",
+                            background: "var(--background)",
+                            color: "var(--accent)",
+                          }}
+                          onClick={() => jumpToSavedLocation(location)}
+                          onMouseEnter={() => setHoveredSavedLocationId(location.id)}
+                          onMouseLeave={() => setHoveredSavedLocationId((prev) => (prev === location.id ? null : prev))}
+                          onFocus={() => setHoveredSavedLocationId(location.id)}
+                          onBlur={() => setHoveredSavedLocationId((prev) => (prev === location.id ? null : prev))}
+                          aria-label={`Go to saved location ${location.name}`}
+                          title={location.name}
+                        >
+                          <FiBookmark />
+                        </button>
+                        <span
+                          className="pointer-events-none absolute top-[-0.35rem] -translate-y-full whitespace-nowrap rounded-full border px-2 py-0.5 text-xs shadow transition-all"
+                          style={{
+                            borderColor: "var(--border)",
+                            background: "var(--card)",
+                            color: "var(--foreground)",
+                            opacity: hoveredSavedLocationId === location.id ? 1 : 0,
+                            transform:
+                              hoveredSavedLocationId === location.id
+                                ? "translate(-50%, -110%) scale(1)"
+                                : "translate(-50%, -80%) scale(0.95)",
+                          }}
+                        >
+                          {location.name}
+                        </span>
+                      </div>
+                    </Marker>
+                  ))}
+                  {activeTripId &&
+                    tripTrackQuery.data?.vehicle?.position?.lat != null &&
+                    tripTrackQuery.data.vehicle.position.lng != null && (
+                      <Marker
+                        latitude={tripTrackQuery.data.vehicle.position.lat}
+                        longitude={tripTrackQuery.data.vehicle.position.lng}
+                        style={{ zIndex: 1000 }}
+                      >
+                        <div
+                          className="flex h-12 w-12 items-center justify-center rounded-full"
+                          style={{
+                            background: `radial-gradient(circle at 35% 25%, ${vehicleMarkerAccent} 0%, ${vehicleMarkerAccent} 45%, rgba(3,7,18,0.85) 100%)`,
+                            border: `2px solid ${vehicleMarkerAccent}`,
+                            color: vehicleMarkerCore,
+                            boxShadow: `0 0 25px ${vehicleMarkerGlow}, 0 0 0 10px ${vehicleMarkerHalo}`,
+                            pointerEvents: "none",
+                          }}
+                          title="Tracked vehicle"
+                        >
+                          {vehicleIsBus ? (
+                            <BusIcon className="h-5 w-5" color={vehicleMarkerCore} />
+                          ) : (
+                            <TrainIcon className="h-5 w-5" color={vehicleMarkerCore} />
+                          )}
+                        </div>
+                      </Marker>
+                    )}
+                </MapGL>
+                {lineShapesQuery.isLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/20 text-sm text-slate-300">
+                    Loading line paths…
+                  </div>
                 )}
-            </MapGL>
-            {lineShapesQuery.isLoading && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/20 text-sm text-slate-300">
-                Loading line paths…
-              </div>
-            )}
-            {lineShapesQuery.isError && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-sm text-rose-400">
-                Unable to load line shapes. Try again shortly.
-              </div>
-            )}
-            {!lineShapesQuery.isLoading && (!lineShapesQuery.data || lineShapesQuery.data.length === 0) && !lineShapesQuery.isError && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/30 text-sm text-slate-300">
-                Line shapes unavailable.
-              </div>
+                {lineShapesQuery.isError && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-sm text-rose-400">
+                    Unable to load line shapes. Try again shortly.
+                  </div>
+                )}
+                {!lineShapesQuery.isLoading && (!lineShapesQuery.data || lineShapesQuery.data.length === 0) && !lineShapesQuery.isError && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/30 text-sm text-slate-300">
+                    Line shapes unavailable.
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
+        </section>
       </main>
       {selectedStopId && isStopSheetOpen && (
         <>
@@ -2498,12 +2657,14 @@ const HomeShellContent = () => {
             onFollowTrip={startFollowingTrip}
             onBusRoutesChange={setBusRouteShapes}
             mapPanelRef={mapSectionRef}
+            allowRefs={stopSheetSafeRefs}
           />
         </>
       )}
       {activeTripId && (
         <div
-          className="fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-6 pointer-events-none"
+          ref={followPanelRef}
+          className="fixed inset-x-0 bottom-0 z-[80] flex justify-center px-4 pb-6 pointer-events-none"
           aria-live="polite"
         >
           <div
@@ -2520,9 +2681,9 @@ const HomeShellContent = () => {
                 <div
                   className="flex h-10 w-10 items-center justify-center rounded-full border"
                   style={{
-                    borderColor: followPanelTokens.border,
-                    background:
-                      themeMode === "dark" ? "rgba(15,23,42,0.6)" : "rgba(226,232,240,0.7)",
+                    borderColor: followPanelTokens.cardAccentBorder,
+                    background: themeMode === "dark" ? "rgba(13,22,38,0.9)" : "rgba(226,232,240,0.85)",
+                    color: followPanelTokens.text,
                   }}
                 >
                   {vehicleIsBus ? (
@@ -2553,7 +2714,7 @@ const HomeShellContent = () => {
                 Stop following
               </button>
             </div>
-            <div className="flex flex-wrap items-center gap-4 text-xs" style={{ color: followPanelTokens.subtext }}>
+                <div className="flex flex-wrap items-center gap-4 text-xs" style={{ color: followPanelTokens.subtext }}>
               {tripTrackQuery.data?.vehicle?.lastUpdated && (
                 <span>Updated {new Date(tripTrackQuery.data.vehicle.lastUpdated).toLocaleTimeString()}</span>
               )}
@@ -2561,7 +2722,7 @@ const HomeShellContent = () => {
                 Focusing on next {followFocusStopIds.length > 0 ? followFocusStopIds.length : Math.min(2, upcomingTripStops.length)} stops
               </span>
             </div>
-            <div className="overflow-x-auto pb-1">
+            <div className="overflow-x-auto pb-1 scrollbar-none">
               {tripTrackQuery.isLoading ? (
                 <p className="px-1 text-sm" style={{ color: followPanelTokens.subtext }}>
                   Locking onto vehicle…
@@ -2582,37 +2743,65 @@ const HomeShellContent = () => {
                   {upcomingTripStops.slice(0, 10).map((stop, idx) => {
                     const etaLabel = formatEta(stop.etaMinutes);
                     const isPrimary = idx === 0;
+                    const stopSourceLabel =
+                      stop.source === "schedule"
+                        ? "Schedule"
+                        : stop.source === "prediction" || stop.source === "blended"
+                          ? "Live"
+                          : "Estimate";
+                    const cardBackground = isPrimary ? followPanelTokens.cardAccent : followPanelTokens.card;
+                    const cardBorder = isPrimary ? followPanelTokens.cardAccentBorder : followPanelTokens.cardBorder;
+                    const cardShadow = isPrimary ? followPanelTokens.cardShadow : followPanelTokens.cardShadowMuted;
                     return (
                       <button
                         key={`${stop.stopId}-${idx}`}
                         type="button"
                         onClick={() => handleJumpToStop(stop.stopId)}
-                        className="flex min-w-[180px] flex-col rounded-2xl border px-4 py-3 text-left transition"
+                        className="group flex min-w-[190px] flex-col rounded-2xl border px-4 py-3 text-left transition hover:-translate-y-0.5 focus-outline"
                         style={{
-                          borderColor: isPrimary ? followPanelTokens.border : followPanelTokens.cardBorder,
-                          background: followPanelTokens.card,
+                          borderColor: cardBorder,
+                          background: cardBackground,
                           color: followPanelTokens.text,
+                          boxShadow: cardShadow,
                         }}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm font-semibold">{stop.stopName}</span>
-                          {isPrimary && (
-                            <span className="chip chip-live text-[10px] font-semibold uppercase tracking-[0.3em]">
-                              Next
+                        <div className="flex h-full flex-col">
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="text-sm font-semibold leading-snug" style={{ color: followPanelTokens.stopName }}>
+                              {stop.stopName}
                             </span>
-                          )}
-                        </div>
-                        <div className="mt-2 flex items-end gap-1">
-                          <span className="text-3xl font-bold">{etaLabel}</span>
-                          <span className="text-xs uppercase" style={{ color: followPanelTokens.subtext }}>
-                            ETA
-                          </span>
-                        </div>
-                        <div className="mt-2 flex items-center gap-2 text-xs">
-                          <EtaSourceIndicator source={stop.source} />
-                          <span style={{ color: followPanelTokens.subtext }}>
-                            {stop.source === "schedule" ? "Scheduled" : ""}
-                          </span>
+                            {isPrimary && (
+                              <span
+                                className="flex h-6 w-6 items-center justify-center rounded-full border text-xs"
+                                aria-label="Next stop"
+                                title="Next stop"
+                                style={{
+                                  background: followPanelTokens.nextIconBackground,
+                                  borderColor: followPanelTokens.nextIconBorder,
+                                  color: followPanelTokens.nextIconColor,
+                                }}
+                              >
+                                <FiArrowRight />
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-3 flex flex-1 flex-col justify-end">
+                            <div className="flex items-end gap-2">
+                              <span className="text-3xl font-bold leading-none" style={{ color: followPanelTokens.etaText }}>
+                                {etaLabel}
+                              </span>
+                              <span
+                                className="text-xs uppercase tracking-[0.3em]"
+                                style={{ color: followPanelTokens.etaSubtext }}
+                              >
+                                ETA
+                              </span>
+                            </div>
+                            <div className="mt-2 flex items-center gap-2 text-xs" style={{ color: followPanelTokens.etaSubtext }}>
+                              <EtaSourceIndicator source={stop.source} />
+                              <span>{stopSourceLabel}</span>
+                            </div>
+                          </div>
                         </div>
                       </button>
                     );
