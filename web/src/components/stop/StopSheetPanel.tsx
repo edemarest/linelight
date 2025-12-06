@@ -729,20 +729,42 @@ export const StopSheetPanel = ({
         if (!activeRoute.direction || !departure.direction) return true;
         return directionsMatch(departure.direction, activeRoute.direction);
       }) ?? [];
-    const etaCandidates = [activeRoute.primaryEta, ...activeRoute.extraEtas].filter(Boolean) as StationEta[];
+    const etaCandidates = [activeRoute.primaryEta, ...activeRoute.extraEtas].filter(
+      Boolean,
+    ) as StationEta[];
     const mapped = etaCandidates.map((eta) => mapEtaToDeparture(eta, activeRoute));
 
     const heroDepartureFromDetails = detailed.length > 0 ? detailed[0] : null;
     const heroDepartureFromEta = mapped[0] ?? null;
     const hero = heroDepartureFromDetails ?? heroDepartureFromEta;
 
-    const upcomingDetailDepartures = heroDepartureFromDetails ? detailed.slice(1) : [];
-    const fallbackDepartures = heroDepartureFromDetails ? mapped : mapped.slice(1);
-    const upcoming = [...upcomingDetailDepartures, ...fallbackDepartures].slice(0, 12);
+    const getDepartureKey = (departure: StationDeparture) =>
+      `${departure.routeId}-${departure.direction ?? ""}-${departure.destination ?? ""}-${departure.etaMinutes ?? -1}`;
+
+    const uniqueDepartures: StationDeparture[] = [];
+    const seenKeys = new Set<string>();
+    const combinedDepartures = [...detailed, ...mapped];
+    let heroKey: string | null = hero ? getDepartureKey(hero) : null;
+
+    const addDeparture = (departure: StationDeparture) => {
+      const key = getDepartureKey(departure);
+      if (seenKeys.has(key)) return;
+      seenKeys.add(key);
+      uniqueDepartures.push(departure);
+    };
+
+    for (const departure of combinedDepartures) {
+      if (heroKey && getDepartureKey(departure) === heroKey) {
+        heroKey = null;
+        continue;
+      }
+      if (uniqueDepartures.length >= 12) break;
+      addDeparture(departure);
+    }
 
     return {
       heroDeparture: hero,
-      upcomingDepartures: upcoming,
+      upcomingDepartures: uniqueDepartures.slice(0, 12),
     };
   }, [board?.details?.departures, activeRoute]);
   useEffect(() => {

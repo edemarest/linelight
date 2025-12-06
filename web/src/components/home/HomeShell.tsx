@@ -190,6 +190,53 @@ const buildDotStyle = (colors: string[]): CSSProperties | undefined => {
   };
 };
 
+// Reusable map annotation component (simple Marker wrapper).
+const MapAnnotation = ({
+  latitude,
+  longitude,
+  label,
+  colors,
+  onClose,
+}: {
+  latitude: number;
+  longitude: number;
+  label: string;
+  colors?: string[];
+  onClose?: () => void;
+}) => {
+  const backgroundStyle: CSSProperties = colors && colors.length > 1 ? buildDotStyle(colors) ?? {} : { background: colors?.[0] ?? "var(--card)" };
+  return (
+    <Marker latitude={latitude} longitude={longitude}>
+      <div style={{ transform: "translate(-50%, -130%)" }}>
+        <div
+          className="rounded-full px-3 py-1 text-sm font-semibold shadow-md"
+          style={{
+            color: "var(--foreground)",
+            border: "1px solid rgba(0,0,0,0.08)",
+            ...backgroundStyle,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span style={{ whiteSpace: "nowrap" }}>{label}</span>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="ml-2 rounded-full p-1"
+              style={{ background: "rgba(0,0,0,0.08)", color: "var(--foreground)" }}
+              aria-label="Close annotation"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      </div>
+    </Marker>
+  );
+};
+
 const NAV_BUTTON_CLASS = "btn btn-ghost focus-outline inline-flex items-center gap-1.5 text-sm font-semibold";
 const PRIMARY_NAV_LINKS = [
   { href: "/", label: "Home", icon: <FiHome /> },
@@ -684,6 +731,8 @@ const HomePanels = ({
 
 const HomeShellContent = () => {
   const mapRef = useRef<MapRef | null>(null);
+  const preferStopZoomRef = useRef<boolean>(false);
+  const prevSelectedLinesRef = useRef<LineOptionId[] | null>(null);
   const mapViewBeforeSheetRef = useRef<{
     center: [number, number];
     zoom: number;
@@ -1015,11 +1064,16 @@ const HomeShellContent = () => {
     const minLng = Math.min(...longitudes);
     const maxLng = Math.max(...longitudes);
     if (points.length === 1 || (maxLat === minLat && maxLng === minLng)) {
+      // If this focus was requested by selecting a stop, use a slightly
+      // reduced zoom so surroundings are visible.
+      const zoomForSingle = preferStopZoomRef.current ? 13 : 14;
       mapRef.current.flyTo({
         center: [points[0].lng, points[0].lat],
-        zoom: 14,
+        zoom: zoomForSingle,
         duration: 800,
       });
+      // reset the preference
+      preferStopZoomRef.current = false;
       return;
     }
     const bounds: [[number, number], [number, number]] = [
@@ -1239,13 +1293,18 @@ const HomeShellContent = () => {
     return lineShapesQuery.data.map((line) => {
       const color = hexToColor(line.color);
       const isActive = selectedLines.length === 0 || selectedLines.includes(line.id);
+      const isSelectedLine = isStopSheetOpen && selectedStopId != null && selectedLines.includes(line.id);
       const widthWhenEmpty = 2;
       const alpha = selectedLines.length === 0 ? 160 : isActive ? 230 : 70;
       return new PathLayer({
         id: `line-shapes-${line.id}`,
         data: line.shapes.map((path) => path.map((coord) => [coord.lng, coord.lat] as [number, number])),
         getPath: (path: [number, number][]) => path,
-        getWidth: () => (selectedLines.length === 0 ? widthWhenEmpty : isActive ? 4 : 1),
+        getWidth: () => {
+          if (selectedLines.length === 0) return widthWhenEmpty;
+          if (isSelectedLine) return 6;
+          return isActive ? 4 : 1;
+        },
         getColor: () => [color[0], color[1], color[2], alpha],
         widthUnits: "pixels",
         opacity: isActive ? 0.95 : 0.25,
@@ -1722,6 +1781,9 @@ const HomeShellContent = () => {
       }
       const derivedLines = toLineOptionIds(meta?.lineIds);
       if (derivedLines.length > 0) {
+        // Save the current selected lines so we can restore them when the
+        // user closes/deselects the stop sheet.
+        prevSelectedLinesRef.current = selectedLines.length > 0 ? [...selectedLines] : [];
         setSelectedLines(derivedLines);
       }
       if (meta?.platformStopIds && meta.platformStopIds.length > 0) {
@@ -1735,6 +1797,9 @@ const HomeShellContent = () => {
       const candidateLines = meta?.lineIds ?? station?.routesServing ?? [];
       const focusPoints = buildStopFocusPoints(lat, lng, candidateLines);
       if (focusPoints.length > 0) {
+        // Prefer a slightly reduced zoom when focusing a stop so surroundings
+        // remain visible while the stop sheet is open.
+        preferStopZoomRef.current = true;
         requestMapFocus({ id: `stop-${stopId}`, points: focusPoints, scroll: true });
       } else {
         clearMapFocus();
@@ -1743,6 +1808,7 @@ const HomeShellContent = () => {
     [
       setIsStopSheetOpen,
       setSelectedLines,
+      selectedLines,
       setSelectedStopId,
       setSelectedStopName,
       setSelectedPlatformStopIds,
@@ -1856,6 +1922,11 @@ const HomeShellContent = () => {
     setSelectedPlatformStopIds(null);
     setBusRouteShapes([]);
     clearMapFocus();
+    // Restore previously-selected lines (if we saved them prior to opening the sheet)
+    if (prevSelectedLinesRef.current) {
+      setSelectedLines(prevSelectedLinesRef.current);
+      prevSelectedLinesRef.current = null;
+    }
     restoreMapView();
   }, [setIsStopSheetOpen, setSelectedStopId, setSelectedPlatformStopIds, clearMapFocus, restoreMapView]);
 
@@ -1863,21 +1934,50 @@ const HomeShellContent = () => {
     if (!isStopSheetOpen) return;
     const handler = (event: PointerEvent) => {
       const target = event.target;
+      const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+      // If any node in the composed path is the stop-sheet panel (fallback to class check), treat as inside.
+      const pathContainsSheet = path.some((n) => {
+        try {
+          return n instanceof Element && n.classList && (n.classList.contains("stop-sheet-panel") || n.getAttribute("role") === "dialog");
+        } catch {
+          return false;
+        }
+      });
+      if (pathContainsSheet) return;
       const withinNode = (node?: Node | null) => {
         if (!node) return false;
         if (target instanceof Node && node.contains(target)) return true;
-        const path = typeof event.composedPath === "function" ? event.composedPath() : [];
         if (path.includes(node)) return true;
         return false;
       };
       if (withinNode(stopSheetRootRef.current)) return;
-      if (withinNode(mapSectionRef.current)) return;
+      // Treat the actual map canvas/container as safe (do not close when clicking the map),
+      // but allow clicks on the surrounding panel to close the sheet.
+      const mapNode = mapRef.current?.getMap?.()?.getCanvas?.() ?? mapRef.current?.getMap?.()?.getContainer?.();
+      if (withinNode(mapNode)) return;
       if (stopSheetSafeRefs.some((ref) => withinNode(ref.current))) return;
       closeStopSheet();
     };
     document.addEventListener("pointerdown", handler);
     return () => document.removeEventListener("pointerdown", handler);
   }, [isStopSheetOpen, closeStopSheet, stopSheetSafeRefs]);
+
+  // When stop sheet opens on desktop, scroll the page so the map panel is centered
+  // in the viewport (improves visibility when sheet would otherwise cut off the map).
+  useEffect(() => {
+    if (!isStopSheetOpen || !isDesktop) return;
+    const el = mapSectionRef.current;
+    if (!el) return;
+    // Delay slightly to let layout settle (sheet mount/animation).
+    const t = window.setTimeout(() => {
+      try {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      } catch {
+        // ignore
+      }
+    }, 120);
+    return () => window.clearTimeout(t);
+  }, [isStopSheetOpen, isDesktop]);
 
   const stopFollowingTrip = useCallback(() => {
     setActiveTripId(null);
@@ -2661,6 +2761,33 @@ const HomeShellContent = () => {
                         </div>
                       </Marker>
                     )}
+                  {/* Selected stop annotation */}
+                  {selectedStopId && isStopSheetOpen && (() => {
+                    const station = stationLookup.get(selectedStopId);
+                    const lat = station?.latitude ?? undefined;
+                    const lng = station?.longitude ?? undefined;
+                    if (lat == null || lng == null) return null;
+                    const tokens = Array.from(
+                      new Map(
+                        (station?.routesServing ?? [])
+                          .map((route) => getLineToken(route, themeMode))
+                          .map((t) => [t.id, t]),
+                      ).values(),
+                    );
+                    const colors = tokens.length > 0 ? tokens.map((t) => t.color) : undefined;
+                    return (
+                      <MapAnnotation
+                        key={`annotation-${selectedStopId}`}
+                        latitude={lat}
+                        longitude={lng}
+                        label={selectedStopName ?? station?.name ?? ""}
+                        colors={colors}
+                        onClose={() => {
+                          closeStopSheet();
+                        }}
+                      />
+                    );
+                  })()}
                 </MapGL>
                 {lineShapesQuery.isLoading && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/20 text-sm text-slate-300">
