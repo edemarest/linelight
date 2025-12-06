@@ -791,6 +791,7 @@ const HomeShellContent = () => {
     };
   }, [themeMode]);
   const stopSheetSafeRefs = useMemo(() => [followPanelRef], [followPanelRef]);
+  const stopSheetRootRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     setIsClient(true);
@@ -1190,9 +1191,11 @@ const HomeShellContent = () => {
       return;
     }
     try {
+      // Pan to the vehicle without forcing a tighter zoom. Zoom is determined
+      // by the bounds-based focus (which includes upcoming stops) so we don't
+      // zoom in too closely during follow.
       map.flyTo({
         center: [vehiclePosition.lng, vehiclePosition.lat],
-        zoom: Math.max(viewState.zoom, 15),
         duration: hasPrevious ? 500 : 0,
         essential: true,
       });
@@ -1300,12 +1303,24 @@ const HomeShellContent = () => {
     if (!stationsData) return [];
     const busToken = getLineToken("Bus", themeMode);
     const limitToFollowStops = Boolean(activeTripId && followFocusStopSet && followFocusStopSet.size > 0);
+    const tripRouteTokenId = tripTrackQuery.data?.routeId ? getLineToken(tripTrackQuery.data!.routeId, themeMode).id : null;
+    const effectiveSelectedLines = tripRouteTokenId
+      ? Array.from(new Set<LineOptionId>([...selectedLines, tripRouteTokenId as LineOptionId]))
+      : selectedLines;
     return stationsData.flatMap((station) => {
-      if (!stationSupportsSelectedLines(station.routesServing, selectedLines)) {
+      if (!stationSupportsSelectedLines(station.routesServing, effectiveSelectedLines)) {
         return [];
       }
       if (limitToFollowStops && !followFocusStopSet?.has(station.stopId)) {
-        return [];
+        // When following a trip, still show stations that belong to the trip's route
+        if (tripRouteTokenId) {
+          const servesTripRoute = (station.routesServing ?? []).some((r) =>
+            candidateMatchesLineId(r, tripRouteTokenId as LineOptionId),
+          );
+          if (!servesTripRoute) return [];
+        } else {
+          return [];
+        }
       }
       if (!limitToFollowStops && normalizedSearch.length > 0) {
         const normalizedName = station.name.toLowerCase();
@@ -1384,9 +1399,13 @@ const HomeShellContent = () => {
   }, [activeTripId, followFocusStopSet, normalizedSearch, selectedLines, stationsData, selectedStopId, themeMode]);
 
   const vehicleIsBus = routeLooksLikeBus(tripTrackQuery.data?.routeId);
-  const vehicleMarkerAccent = themeMode === "dark" ? "#38bdf8" : "#0ea5e9";
-  const vehicleMarkerGlow = themeMode === "dark" ? "rgba(56,189,248,0.5)" : "rgba(14,165,233,0.45)";
-  const vehicleMarkerHalo = themeMode === "dark" ? "rgba(8,47,73,0.55)" : "rgba(125,211,252,0.35)";
+  const vehicleLineToken = useMemo(
+    () => getLineToken(tripTrackQuery.data?.routeId, themeMode),
+    [tripTrackQuery.data?.routeId, themeMode],
+  );
+  const vehicleMarkerAccent = vehicleLineToken.color;
+  const vehicleMarkerGlow = vehicleLineToken.tint;
+  const vehicleMarkerHalo = vehicleLineToken.border;
   const vehicleMarkerCore = themeMode === "dark" ? "#020617" : "#f8fafc";
   const isFollowingTrip = Boolean(activeTripId);
   const preferStackedLayout = isFollowingTrip || !isDesktop;
@@ -1839,6 +1858,26 @@ const HomeShellContent = () => {
     clearMapFocus();
     restoreMapView();
   }, [setIsStopSheetOpen, setSelectedStopId, setSelectedPlatformStopIds, clearMapFocus, restoreMapView]);
+
+  useEffect(() => {
+    if (!isStopSheetOpen) return;
+    const handler = (event: PointerEvent) => {
+      const target = event.target;
+      const withinNode = (node?: Node | null) => {
+        if (!node) return false;
+        if (target instanceof Node && node.contains(target)) return true;
+        const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+        if (path.includes(node)) return true;
+        return false;
+      };
+      if (withinNode(stopSheetRootRef.current)) return;
+      if (withinNode(mapSectionRef.current)) return;
+      if (stopSheetSafeRefs.some((ref) => withinNode(ref.current))) return;
+      closeStopSheet();
+    };
+    document.addEventListener("pointerdown", handler);
+    return () => document.removeEventListener("pointerdown", handler);
+  }, [isStopSheetOpen, closeStopSheet, stopSheetSafeRefs]);
 
   const stopFollowingTrip = useCallback(() => {
     setActiveTripId(null);
@@ -2604,7 +2643,7 @@ const HomeShellContent = () => {
                         style={{ zIndex: 1000 }}
                       >
                         <div
-                          className="flex h-12 w-12 items-center justify-center rounded-full"
+                          className="flex h-14 w-14 items-center justify-center rounded-full"
                           style={{
                             background: `radial-gradient(circle at 35% 25%, ${vehicleMarkerAccent} 0%, ${vehicleMarkerAccent} 45%, rgba(3,7,18,0.85) 100%)`,
                             border: `2px solid ${vehicleMarkerAccent}`,
@@ -2615,9 +2654,9 @@ const HomeShellContent = () => {
                           title="Tracked vehicle"
                         >
                           {vehicleIsBus ? (
-                            <BusIcon className="h-5 w-5" color={vehicleMarkerCore} />
+                            <BusIcon className="h-6 w-6" color={vehicleMarkerCore} />
                           ) : (
-                            <TrainIcon className="h-5 w-5" color={vehicleMarkerCore} />
+                            <TrainIcon className="h-6 w-6" color={vehicleMarkerCore} />
                           )}
                         </div>
                       </Marker>
@@ -2657,6 +2696,7 @@ const HomeShellContent = () => {
             onFollowTrip={startFollowingTrip}
             onBusRoutesChange={setBusRouteShapes}
             mapPanelRef={mapSectionRef}
+            panelRootRef={stopSheetRootRef}
             allowRefs={stopSheetSafeRefs}
           />
         </>

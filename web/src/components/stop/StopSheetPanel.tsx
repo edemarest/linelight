@@ -46,6 +46,7 @@ interface StopSheetPanelProps {
   onFollowTrip: (tripId: string | null) => void;
   onBusRoutesChange?: (shapes: LineShapeResponse[]) => void;
   mapPanelRef?: RefObject<HTMLElement | null>;
+  panelRootRef?: RefObject<HTMLElement | null>;
   allowRefs?: Array<RefObject<HTMLElement | null>>;
 }
 
@@ -113,6 +114,25 @@ type RouteGroup = {
 
 type StationDepartureWithTrip = StationDeparture & { tripId?: string | null };
 
+const normalizeDirectionForComparison = (direction?: string | null): string | null => {
+  if (!direction) return null;
+  const cleaned = direction.trim().toLowerCase().replace(/[^a-z]/g, "");
+  return cleaned || null;
+};
+
+const directionsMatch = (departureDirection?: string | null, routeDirection?: string | null): boolean => {
+  const normalizedDeparture = normalizeDirectionForComparison(departureDirection);
+  const normalizedRoute = normalizeDirectionForComparison(routeDirection);
+  if (!normalizedDeparture || !normalizedRoute) {
+    return false;
+  }
+  if (normalizedDeparture === normalizedRoute) return true;
+  return (
+    normalizedDeparture.includes(normalizedRoute) ||
+    normalizedRoute.includes(normalizedDeparture)
+  );
+};
+
 const toDirectionId = (direction?: string | null): 0 | 1 | null => {
   if (!direction) return null;
   const normalized = direction.toLowerCase();
@@ -151,6 +171,11 @@ const mapEtaToDeparture = (
   status: eta.status ?? "on_time",
   tripId: eta.tripId ?? null,
 });
+
+const getDepartureDirectionKey = (departure: StationDeparture) => {
+  const directionValue = departure.direction ?? "";
+  return `${departure.routeId}-${directionValue}`;
+};
 
 const getRouteDotLabel = (routeLabel: string, routeId: string): string => {
   if (routeId.startsWith("Green-")) {
@@ -365,6 +390,7 @@ export const StopSheetPanel = ({
   preferredDirection,
   onBusRoutesChange,
   mapPanelRef,
+  panelRootRef,
   allowRefs,
 }: StopSheetPanelProps) => {
   const safeAllowRefs = allowRefs ?? NO_EXTRA_REFS;
@@ -597,11 +623,8 @@ export const StopSheetPanel = ({
   const [routeExpansion, setRouteExpansion] = useState<Record<string, boolean>>({});
   const collapseEnabled = routeGroups.length > 1 && routeDirectionOptions.length > 4;
   const singleRouteOnly = routeGroups.length <= 1;
-  const routeListGridClass = singleRouteOnly
-    ? "grid gap-2 sm:grid-cols-1"
-    : routeDirectionOptions.length > 1
-      ? "grid gap-2 sm:grid-cols-2"
-      : "grid gap-2 sm:grid-cols-1";
+  const preferSingleColumnRoutes = singleRouteOnly || routeDirectionOptions.length <= 4;
+  const routeListGridClass = `grid gap-2 ${preferSingleColumnRoutes ? "sm:grid-cols-1" : "sm:grid-cols-2"}`;
   const areRoutesExpanded = collapseEnabled ? routeExpansion[stopId] ?? false : true;
 
   const activeRouteId = useMemo(() => {
@@ -701,23 +724,25 @@ export const StopSheetPanel = ({
       return { heroDeparture: null as StationDeparture | null, upcomingDepartures: [] as StationDeparture[] };
     }
     const detailed =
-      board?.details?.departures?.filter(
-        (departure) =>
-          departure.routeId === activeRoute.routeId && departure.direction === activeRoute.direction,
-      ) ?? [];
-    if (detailed.length > 0) {
-      const [next, ...rest] = detailed;
-      return {
-        heroDeparture: next ?? null,
-        upcomingDepartures: rest.slice(0, 12),
-      };
-    }
+      board?.details?.departures?.filter((departure) => {
+        if (departure.routeId !== activeRoute.routeId) return false;
+        if (!activeRoute.direction || !departure.direction) return true;
+        return directionsMatch(departure.direction, activeRoute.direction);
+      }) ?? [];
     const etaCandidates = [activeRoute.primaryEta, ...activeRoute.extraEtas].filter(Boolean) as StationEta[];
     const mapped = etaCandidates.map((eta) => mapEtaToDeparture(eta, activeRoute));
-    const [next, ...rest] = mapped;
+
+    const heroDepartureFromDetails = detailed.length > 0 ? detailed[0] : null;
+    const heroDepartureFromEta = mapped[0] ?? null;
+    const hero = heroDepartureFromDetails ?? heroDepartureFromEta;
+
+    const upcomingDetailDepartures = heroDepartureFromDetails ? detailed.slice(1) : [];
+    const fallbackDepartures = heroDepartureFromDetails ? mapped : mapped.slice(1);
+    const upcoming = [...upcomingDetailDepartures, ...fallbackDepartures].slice(0, 12);
+
     return {
-      heroDeparture: next ?? null,
-      upcomingDepartures: rest.slice(0, 12),
+      heroDeparture: hero,
+      upcomingDepartures: upcoming,
     };
   }, [board?.details?.departures, activeRoute]);
   useEffect(() => {
@@ -824,6 +849,18 @@ export const StopSheetPanel = ({
 
   const mobileSheetRef = useRef<HTMLElement | null>(null);
   const desktopSheetRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!panelRootRef) return;
+    // Keep the provided panelRootRef.current pointing to whichever sheet ref is mounted.
+    const update = () => {
+      panelRootRef.current = mobileSheetRef.current ?? desktopSheetRef.current ?? null;
+    };
+    update();
+    return () => {
+      if (panelRootRef) panelRootRef.current = null;
+    };
+  }, [panelRootRef]);
 
   useEffect(() => {
     if (!isOpen) return;
