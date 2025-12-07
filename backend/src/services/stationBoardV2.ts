@@ -15,7 +15,7 @@ import { extractFirstRelationshipId } from "../utils/jsonApi";
 import { mapRouteTypeToMode } from "../utils/routeMode";
 import type { Mode } from "../models/domain";
 import { logger } from "../utils/logger";
-import type { MbtaStop } from "../models/mbta";
+import type { MbtaRoute, MbtaStop } from "../models/mbta";
 
 const toStationEta = (departure: BlendedDeparture): StationEta => {
   const eta: StationEta = {
@@ -35,11 +35,44 @@ const toStationEta = (departure: BlendedDeparture): StationEta => {
   return eta;
 };
 
-const groupDepartures = (departures: BlendedDeparture[], cache: MbtaCache): StationBoardRoutePrimary[] => {
+const normalizeLabel = (value?: string | null): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const resolveRouteDestination = (
+  departure: BlendedDeparture,
+  routesMap: Map<string, MbtaRoute>,
+): string | null => {
+  const explicit = normalizeLabel(departure.headsign);
+  if (explicit) return explicit;
+  if (!departure.routeId) return null;
+  const route = routesMap.get(departure.routeId);
+  if (!route) return null;
+  if (departure.directionId != null) {
+    const fromRoute = normalizeLabel(route.attributes.direction_destinations?.[departure.directionId] ?? null);
+    if (fromRoute) {
+      return fromRoute;
+    }
+  }
+  return normalizeLabel(route.attributes.long_name) ?? normalizeLabel(route.attributes.short_name) ?? null;
+};
+
+const directionIdToLabel = (directionId: 0 | 1 | null | undefined): string => {
+  if (directionId === 0) return "Inbound";
+  if (directionId === 1) return "Outbound";
+  return "Unknown";
+};
+
+const DETAIL_DEPARTURE_DIRECTION_LIMIT = 6;
+const DETAIL_DEPARTURE_TOTAL_LIMIT = 60;
+
+const groupDepartures = (
+  departures: BlendedDeparture[],
+  routesMap: Map<string, MbtaRoute>,
+): StationBoardRoutePrimary[] => {
   const groups = new Map<string, BlendedDeparture[]>();
-  const routesEntry = cache.getRoutes();
-  const routesMap = new Map(routesEntry?.data.map(r => [r.id, r]) ?? []);
-  
   departures.forEach((departure) => {
     const key = `${departure.routeId ?? "unknown"}-${departure.directionId ?? "na"}`;
     const existing = groups.get(key) ?? [];
@@ -60,27 +93,31 @@ const groupDepartures = (departures: BlendedDeparture[], cache: MbtaCache): Stat
         extraEtas: [],
       };
     }
-    const route = routesMap.get(primary.routeId ?? "");
+    const route = primary.routeId ? routesMap.get(primary.routeId) : undefined;
     const mode = route ? mapRouteTypeToMode(route.attributes.type) : ("other" as Mode);
-    
+    const shortName =
+      normalizeLabel(route?.attributes.short_name) ?? normalizeLabel(route?.attributes.long_name) ?? primary.routeId ?? "Route";
     return {
       routeId: primary.routeId ?? "unknown",
-      shortName: primary.routeId ?? "Route",
+      shortName,
       mode,
-      direction: primary.directionId === 0 ? "Inbound" : primary.directionId === 1 ? "Outbound" : "Unknown",
+      direction: directionIdToLabel(primary.directionId),
       primaryEta: toStationEta(primary),
       extraEtas: group.slice(1, 4).map(toStationEta),
     };
   });
 };
 
-const toStationDeparture = (departure: BlendedDeparture): StationDeparture => {
+const toStationDeparture = (
+  departure: BlendedDeparture,
+  routesMap: Map<string, MbtaRoute>,
+): StationDeparture => {
+  const directionLabel = directionIdToLabel(departure.directionId);
   const row: StationDeparture = {
     routeId: departure.routeId ?? "unknown",
     shortName: departure.routeId ?? "Route",
-    direction:
-      departure.directionId === 0 ? "Inbound" : departure.directionId === 1 ? "Outbound" : "Unknown direction",
-    destination: departure.headsign ?? "—",
+    direction: directionLabel,
+    destination: resolveRouteDestination(departure, routesMap) ?? "—",
     etaMinutes: departure.etaMinutes ?? null,
     source: departure.etaSource,
     status: departure.status,
@@ -140,6 +177,9 @@ export const buildStationBoardV2 = async (
     return null;
   }
 
+  const routesEntry = cache.getRoutes();
+  const routesMap = new Map<string, MbtaRoute>((routesEntry?.data ?? []).map((route) => [route.id, route]));
+
   const platformStopIds = collectPlatformStopIds(stopMap, boardableStop);
   const snapshotMap = new Map<string, StopEtaSnapshot>();
   platformStopIds.forEach((platformId) => {
@@ -182,9 +222,26 @@ export const buildStationBoardV2 = async (
       .flatMap((snapshot) => snapshot.departures ?? []),
   );
 
-  const primaryRoutes = groupDepartures(departures, cache);
+  const primaryRoutes = groupDepartures(departures, routesMap);
+  const detailDepartureCounts = new Map<string, number>();
+  const detailDepartures: StationDeparture[] = [];
+  for (const departure of departures) {
+    if (detailDepartures.length >= DETAIL_DEPARTURE_TOTAL_LIMIT) {
+      break;
+    }
+    const routeIdKey = departure.routeId ?? "unknown";
+    const directionLabel = directionIdToLabel(departure.directionId);
+    const detailKey = `${routeIdKey}-${directionLabel}`;
+    const count = detailDepartureCounts.get(detailKey) ?? 0;
+    if (count >= DETAIL_DEPARTURE_DIRECTION_LIMIT) {
+      continue;
+    }
+    detailDepartureCounts.set(detailKey, count + 1);
+    detailDepartures.push(toStationDeparture(departure, routesMap));
+  }
+
   const details: StationBoardDetails = {
-    departures: departures.slice(0, 15).map(toStationDeparture),
+    departures: detailDepartures,
     alerts: [],
     facilities: [],
   };

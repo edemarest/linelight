@@ -1,6 +1,6 @@
 import type { MbtaClient } from "../mbta/client";
 import type { MbtaCache } from "../cache/mbtaCache";
-import type { MbtaPrediction } from "../models/mbta";
+import type { MbtaPrediction, MbtaTrip } from "../models/mbta";
 import { extractFirstRelationshipId } from "../utils/jsonApi";
 import type { BlendedDeparture, BlendOptions } from "./etaBlender";
 import { fetchBlendedDepartures } from "./etaBlender";
@@ -93,6 +93,7 @@ interface CachedSnapshotOptions {
 }
 
 const mapPredictionToDeparture = (
+  cache: MbtaCache | undefined,
   stopId: string,
   prediction: MbtaPrediction,
   nowMs: number,
@@ -121,6 +122,19 @@ const mapPredictionToDeparture = (
 
   if (options.stopName) {
     row.stopName = options.stopName;
+  }
+
+  // Try to attach a headsign by looking up the trip in the cache (if available).
+  try {
+    const tripsEntry = cache?.getTrips();
+    if (tripId && tripsEntry && Array.isArray(tripsEntry.data)) {
+      const found = (tripsEntry.data as MbtaTrip[]).find((t) => t.id === tripId);
+      if (found && found.attributes?.headsign) {
+        row.headsign = found.attributes.headsign ?? undefined;
+      }
+    }
+  } catch (error) {
+    // Non-fatal: if cache lookup fails, continue without headsign.
   }
 
   return row;
@@ -152,7 +166,7 @@ export const getCachedStopEtaSnapshot = (
   const maxResults = options.maxResults ?? 50;
 
   const departures = predictions
-    .map((prediction) => mapPredictionToDeparture(stopId, prediction, nowMs, options))
+    .map((prediction) => mapPredictionToDeparture(cache, stopId, prediction, nowMs, options))
     .filter((departure): departure is BlendedDeparture => {
       if (!departure || !departure.finalTime) return false;
       const ts = parseTimestamp(departure.finalTime);

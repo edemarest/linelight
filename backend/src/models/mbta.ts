@@ -11,6 +11,8 @@ export interface MbtaRouteAttributes {
   color: string | null;
   text_color: string | null;
   sort_order: number | null;
+  direction_destinations?: string[] | null;
+  direction_names?: string[] | null;
 }
 
 export type MbtaRoute = JsonApiResource<MbtaRouteAttributes> & { type: "route" };

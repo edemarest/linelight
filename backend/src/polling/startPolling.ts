@@ -227,6 +227,7 @@ const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
     run: async () => {
       const routeChunks = chunkArray(getTargetRouteIds(), 10);
       const predictions: MbtaPrediction[] = [];
+      const includedTrips: MbtaTrip[] = [];
       for (const chunk of routeChunks) {
         const response = await client.getPredictions({
           "filter[route]": chunk.join(","),
@@ -234,9 +235,27 @@ const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
           "page[limit]": 500,
         });
         predictions.push(...ensureArray(response.data));
+        // Collect any included trip resources so we can merge headsigns into the trips cache
+        ensureArray(response.included)
+          .filter((resource) => resource.type === "trip")
+          .forEach((resource) => includedTrips.push(resource as unknown as MbtaTrip));
         await sleep(60);
       }
       cache.setPredictions(predictions);
+      // If the MBTA predictions response included trip resources with headsigns,
+      // merge them into the trips cache so downstream code (station boards)
+      // can attach trip headsigns to departures even before the periodic
+      // `trips` polling job runs.
+      if (includedTrips.length > 0) {
+        try {
+          const existing = cache.getTrips()?.data ?? [];
+          const merged = new Map<string, MbtaTrip>(existing.map((t: MbtaTrip) => [t.id, t]));
+          includedTrips.forEach((t) => merged.set(t.id, t));
+          cache.setTrips(Array.from(merged.values()));
+        } catch (err) {
+          logger.warn("Failed to merge included trips from predictions into trips cache", { message: String(err) });
+        }
+      }
     },
   },
   {

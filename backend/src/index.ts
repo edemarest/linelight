@@ -101,6 +101,7 @@ app.get("/api/health", (_req, res) => {
     status: "ok",
     timestamp: new Date().toISOString(),
     mbtaApiBaseUrl: config.mbtaApiBaseUrl,
+    mbtaApiKeyConfigured: Boolean(config.mbtaApiKey),
     cachedRoutes: routes ? routes.data.length : 0,
     cacheHealth: polling.cache.getHealth(),
     mbtaTelemetry: getMbtaClientTelemetry(),

@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: linelight-redis-local
+    restart: unless-stopped
+    ports:
+      - "6379:6379" # publish Redis on host so a locally-run backend can connect to 127.0.0.1:6379
+    volumes:
+      - redis-local-data:/data
+
+volumes:
+  redis-local-data:

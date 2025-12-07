@@ -49,7 +49,9 @@ import type { LineToken } from "@/lib/designTokens";
 import { getLandmarkImage, getStopHue } from "@/lib/stopStyling";
 import { DirectionArrowIcon } from "@/components/common/DirectionArrowIcon";
 import { ThemeProvider, useThemeMode } from "@/hooks/useThemeMode";
+import BuildInfoBadge from "@/components/BuildInfoBadge";
 import { breakpointClass, useBreakpoint } from "@/hooks/useBreakpoint";
+import { useResponsiveMapHeights } from "@/hooks/useResponsiveMapHeights";
 
 const DEFAULT_POSITION = {
   lat: envConfig.defaultMap.lat,
@@ -839,7 +841,11 @@ const HomeShellContent = () => {
       nextIconColor: "#0369a1",
     };
   }, [themeMode]);
-  const stopSheetSafeRefs = useMemo(() => [followPanelRef], [followPanelRef]);
+  const stopSheetBackdropRef = useRef<HTMLDivElement | null>(null);
+  const stopSheetSafeRefs = useMemo(
+    () => [followPanelRef, stopSheetBackdropRef],
+    [followPanelRef, stopSheetBackdropRef],
+  );
   const stopSheetRootRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -1161,6 +1167,48 @@ const HomeShellContent = () => {
   const stationLookup = useMemo(() => {
     return new Map(stationsData.map((station) => [station.stopId, station]));
   }, [stationsData]);
+  const restoreMapView = useCallback(() => {
+    const snapshot = mapViewBeforeSheetRef.current;
+    mapViewBeforeSheetRef.current = null;
+    if (!snapshot) return;
+    const mapInstance = mapRef.current;
+    if (!mapInstance) return;
+    try {
+      mapInstance.flyTo({
+        center: snapshot.center,
+        zoom: snapshot.zoom,
+        bearing: snapshot.bearing,
+        pitch: snapshot.pitch,
+        duration: 650,
+        essential: true,
+      });
+    } catch {
+      try {
+        mapInstance.jumpTo({
+          center: snapshot.center,
+          zoom: snapshot.zoom,
+          bearing: snapshot.bearing,
+          pitch: snapshot.pitch,
+        });
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+  const closeStopSheet = useCallback(() => {
+    setIsStopSheetOpen(false);
+    setSelectedStopId(null);
+    setSelectedStopName(null);
+    setSelectedPlatformStopIds(null);
+    setBusRouteShapes([]);
+    clearMapFocus();
+    // Restore previously-selected lines (if we saved them prior to opening the sheet)
+    if (prevSelectedLinesRef.current) {
+      setSelectedLines(prevSelectedLinesRef.current);
+      prevSelectedLinesRef.current = null;
+    }
+    restoreMapView();
+  }, [setIsStopSheetOpen, setSelectedStopId, setSelectedStopName, setSelectedPlatformStopIds, setSelectedLines, clearMapFocus, restoreMapView]);
 
   useEffect(() => {
     if (!stationsData) return;
@@ -1472,7 +1520,10 @@ const HomeShellContent = () => {
   const stackedLayoutClass = layoutBaseClass;
   const splitLayoutClass = `${layoutBaseClass} lg:grid-cols-[340px_minmax(0,1fr)] lg:items-start`;
   const layoutClass = preferStackedLayout ? stackedLayoutClass : splitLayoutClass;
-  const mapPanelHeight = preferStackedLayout ? "460px" : "min(900px, calc(100vh - 220px))";
+  const { mapPanelHeight, mobileSheetHeight } = useResponsiveMapHeights({
+    preferStackedLayout,
+    breakpointInfo,
+  });
 
   const favoriteStops = useMemo(() => {
     if (!homeData) return [];
@@ -1500,35 +1551,6 @@ const HomeShellContent = () => {
   );
   const greenDrawerCollapsedWidth = 40;
   const greenDrawerFullWidth = greenDrawerCollapsedWidth + greenLineOptions.length * 32 + 44;
-  const restoreMapView = useCallback(() => {
-    const snapshot = mapViewBeforeSheetRef.current;
-    mapViewBeforeSheetRef.current = null;
-    if (!snapshot) return;
-    const mapInstance = mapRef.current;
-    if (!mapInstance) return;
-    try {
-      mapInstance.flyTo({
-        center: snapshot.center,
-        zoom: snapshot.zoom,
-        bearing: snapshot.bearing,
-        pitch: snapshot.pitch,
-        duration: 650,
-        essential: true,
-      });
-    } catch {
-      try {
-        mapInstance.jumpTo({
-          center: snapshot.center,
-          zoom: snapshot.zoom,
-          bearing: snapshot.bearing,
-          pitch: snapshot.pitch,
-        });
-      } catch {
-        // ignore
-      }
-    }
-  }, []);
-
   const startFollowingTrip = useCallback(
     (tripId: string | null) => {
       if (!tripId) return;
@@ -1657,32 +1679,49 @@ const HomeShellContent = () => {
   }, [isDesktop]);
 
   const recenterMap = useCallback(() => {
-    if (!mapReady || !stationsData || stationsData.length === 0 || !mapRef.current) return;
-    const closestStations = [...stationsData]
-      .map((station) => ({
-        station,
-        distance: metersBetween(position.lat, position.lng, station.latitude, station.longitude),
-      }))
-      .sort((a, b) => a.distance - b.distance)
-      .slice(0, 6)
-      .map(({ station }) => station);
-    if (closestStations.length === 0) {
+    if (!mapReady || !mapRef.current) return;
+    const closestStations =
+      stationsData && stationsData.length > 0
+        ? [...stationsData]
+            .map((station) => ({
+              station,
+              distance: metersBetween(position.lat, position.lng, station.latitude, station.longitude),
+            }))
+            .sort((a, b) => a.distance - b.distance)
+            .slice(0, 6)
+            .map(({ station }) => station)
+        : [];
+    const focusTargets: { lat: number; lng: number }[] = closestStations
+      .map((station) => ({ lat: station.latitude, lng: station.longitude }))
+      .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng));
+    if (Number.isFinite(position.lat) && Number.isFinite(position.lng)) {
+      focusTargets.push({ lat: position.lat, lng: position.lng });
+    }
+    if (focusTargets.length === 0) {
       return;
     }
-    const latitudes = closestStations.map((station) => station.latitude);
-    const longitudes = closestStations.map((station) => station.longitude);
-    latitudes.push(position.lat);
-    longitudes.push(position.lng);
+    if (focusTargets.length === 1) {
+      const only = focusTargets[0];
+      mapRef.current.flyTo({
+        center: [only.lng, only.lat],
+        zoom: 14,
+        duration: 800,
+      });
+      setHasCenteredMap(true);
+      return;
+    }
+    const latitudes = focusTargets.map((point) => point.lat);
+    const longitudes = focusTargets.map((point) => point.lng);
     const bounds: [[number, number], [number, number]] = [
       [Math.min(...longitudes), Math.min(...latitudes)],
       [Math.max(...longitudes), Math.max(...latitudes)],
     ];
-    
+
     try {
       const map = mapRef.current.getMap();
       map.fitBounds(bounds, { padding: 120, duration: 800 });
     } catch {
-      // Fallback if fitBounds fails
+      // Fallback if fitBounds fails or MapLibre is mid-initialization.
       const avgLat = latitudes.reduce((sum, lat) => sum + lat, 0) / latitudes.length;
       const avgLng = longitudes.reduce((sum, lng) => sum + lng, 0) / longitudes.length;
       mapRef.current.flyTo({
@@ -1915,20 +1954,6 @@ const HomeShellContent = () => {
     [applyLocation, centerMapOnCoordinates, manualLat, manualLng],
   );
 
-  const closeStopSheet = useCallback(() => {
-    setIsStopSheetOpen(false);
-    setSelectedStopId(null);
-    setSelectedStopName(null);
-    setSelectedPlatformStopIds(null);
-    setBusRouteShapes([]);
-    clearMapFocus();
-    // Restore previously-selected lines (if we saved them prior to opening the sheet)
-    if (prevSelectedLinesRef.current) {
-      setSelectedLines(prevSelectedLinesRef.current);
-      prevSelectedLinesRef.current = null;
-    }
-    restoreMapView();
-  }, [setIsStopSheetOpen, setSelectedStopId, setSelectedPlatformStopIds, clearMapFocus, restoreMapView]);
 
   useEffect(() => {
     if (!isStopSheetOpen) return;
@@ -1979,6 +2004,32 @@ const HomeShellContent = () => {
     return () => window.clearTimeout(t);
   }, [isStopSheetOpen, isDesktop]);
 
+  const selectedStopAnnotation = useMemo(() => {
+    if (!selectedStopId || !isStopSheetOpen) return null;
+    const station = stationLookup.get(selectedStopId);
+    const lat = station?.latitude;
+    const lng = station?.longitude;
+    if (lat == null || lng == null) return null;
+    const tokens = Array.from(
+      new Map(
+        (station?.routesServing ?? [])
+          .map((route) => getLineToken(route, themeMode))
+          .map((t) => [t.id, t]),
+      ).values(),
+    );
+    const colors = tokens.length > 0 ? tokens.map((t) => t.color) : undefined;
+    return (
+      <MapAnnotation
+        key={`annotation-${selectedStopId}`}
+        latitude={lat}
+        longitude={lng}
+        label={selectedStopName ?? station?.name ?? ""}
+        colors={colors}
+        onClose={closeStopSheet}
+      />
+    );
+  }, [selectedStopId, isStopSheetOpen, stationLookup, themeMode, selectedStopName, closeStopSheet]);
+
   const stopFollowingTrip = useCallback(() => {
     setActiveTripId(null);
     if (followResumeContext?.stopId) {
@@ -2003,8 +2054,9 @@ const HomeShellContent = () => {
 
   return (
     <div className="flex min-h-screen flex-col" style={{ background: "var(--background)", color: "var(--foreground)" }}>
+      <BuildInfoBadge />
       <header className="sticky top-0 z-40 border-b bg-[color:var(--background)]/95 backdrop-blur" style={{ borderColor: "var(--border)" }}>
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-2.5 sm:px-6">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-2 sm:px-6 sm:py-2.5">
           <Link href="/" className="flex items-center gap-2 text-lg font-semibold tracking-wide" style={{ color: "var(--foreground)" }}>
             <span className="text-[10px] uppercase tracking-[0.5em] text-[color:var(--muted)]">LineLight</span>
             <span className="hidden sm:inline">Transit Radar</span>
@@ -2045,13 +2097,14 @@ const HomeShellContent = () => {
             </div>
           )}
         </div>
-        {!isDesktop && (
-          <div
-            id="primary-nav-panel"
-            className={`mx-auto w-full max-w-6xl px-4 pb-3 transition-all duration-200 sm:px-6 ${
-              isNavDrawerOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
-            }`}
-          >
+        {!isDesktop && !preferStackedLayout && (
+        <div
+          id="primary-nav-panel"
+          className={`mx-auto w-full max-w-6xl px-4 transition-[max-height,opacity] duration-200 overflow-hidden sm:px-6 ${
+            isNavDrawerOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+          }`}
+          style={{ maxHeight: isNavDrawerOpen ? "480px" : "0px" }}
+        >
             <nav
               className="rounded-2xl border bg-[color:var(--card)] p-4 shadow-xl"
               style={{ borderColor: "var(--border)" }}
@@ -2088,7 +2141,7 @@ const HomeShellContent = () => {
         )}
       </header>
       <main
-        className={`${layoutClass} relative overflow-hidden`}
+        className={`${layoutClass} relative overflow-hidden overflow-y-auto`}
         data-breakpoint={layoutBreakpoint}
         data-layout={preferStackedLayout ? "stacked" : "split"}
       >
@@ -2128,8 +2181,10 @@ const HomeShellContent = () => {
             />
           </svg>
         </div>
-        {!isFollowingTrip && (
-          <aside className="w-full space-y-5 lg:w-[340px] lg:shrink-0 lg:space-y-5 lg:sticky lg:top-6 lg:pr-1 lg:self-start">
+        {!isFollowingTrip && !preferStackedLayout && (
+        <aside
+            className={`w-full ${isDesktop ? "space-y-5 lg:w-[340px] lg:shrink-0 lg:space-y-5 lg:sticky lg:top-6 lg:pr-1 lg:self-start" : "space-y-4 px-4 pb-3 pt-2"} `}
+          >
               <div className="surface px-6 py-5">
                 <div className="flex items-center justify-between gap-2">
                   <p className="heading-label" style={{ color: "var(--muted)" }}>
@@ -2181,13 +2236,13 @@ const HomeShellContent = () => {
             <div
               ref={mapSectionRef}
               className={`panel ${isFollowingTrip ? "!p-0" : ""}`}
-              style={{ position: "relative" }}
+              style={{ position: "relative", height: mapPanelHeight }}
             >
-              {!isFollowingTrip && (
+              {!isFollowingTrip && !preferStackedLayout && (
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between" style={{ position: "relative", zIndex: 20 }}>
-              <div>
-                <p className="heading-label" style={{ color: "var(--muted)" }}>
-                  Map spotlight
+        <div>
+          <p className="heading-label" style={{ color: "var(--muted)" }}>
+            Map spotlight
                 </p>
                 <h2 className="text-xl font-semibold" style={{ color: "var(--foreground)" }}>
                   Tap stop to view ETAs
@@ -2335,8 +2390,8 @@ const HomeShellContent = () => {
               </div>
             </div>
           )}
-          {!isFollowingTrip && (
-            <div className="mt-4 flex w-full flex-col gap-4 lg:flex-row lg:items-start">
+            {!isFollowingTrip && !preferStackedLayout && (
+              <div className="mt-4 flex w-full flex-col gap-4 lg:flex-row lg:items-start">
               <div className="flex-1 min-w-[260px]">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <label htmlFor="map-spotlight-search" className="text-xs font-semibold" style={{ color: "var(--muted)" }}>
@@ -2630,14 +2685,39 @@ const HomeShellContent = () => {
                   onLoad={() => setMapReady(true)}
                   onClick={handleMapClick}
                 >
-                  {viewState.latitude != null && viewState.longitude != null && (
-                    <DeckGL
-                      style={{ position: "absolute", inset: "0", pointerEvents: "none" }}
-                      layers={[...pathLayers, ...busRouteLayers]}
-                      viewState={viewState}
-                      controller={false}
-                    />
-                  )}
+                  {/**
+                   * DeckGL can try to access the underlying WebGL context (via a
+                   * ResizeObserver) before the map's canvas / GL context is ready,
+                   * which causes errors like "Cannot read properties of undefined
+                   * (reading 'maxTextureDimension2D')". Guard rendering so DeckGL
+                   * only mounts when a real GL context exists on the map canvas.
+                   */}
+                  {(() => {
+                    const deckGlReady = (() => {
+                      try {
+                        const map = mapRef.current && typeof mapRef.current.getMap === "function" ? mapRef.current.getMap() : null;
+                        const canvas = map && typeof map.getCanvas === "function" ? map.getCanvas() : null;
+                        if (!canvas) return false;
+                        // Prefer webgl2 if available, fall back to webgl
+                        const gl = (canvas.getContext && (canvas.getContext("webgl2") || canvas.getContext("webgl"))) || null;
+                        return Boolean(gl);
+                      } catch (err) {
+                        return false;
+                      }
+                    })();
+
+                    if (viewState.latitude != null && viewState.longitude != null && deckGlReady) {
+                      return (
+                        <DeckGL
+                          style={{ position: "absolute", inset: "0", pointerEvents: "none" }}
+                          layers={[...pathLayers, ...busRouteLayers]}
+                          viewState={viewState}
+                          controller={false}
+                        />
+                      );
+                    }
+                    return null;
+                  })()}
                   {stationMarkers.map((marker) => (
                     <Marker key={marker.markerKey} latitude={marker.latitude} longitude={marker.longitude}>
                       <button
@@ -2762,32 +2842,7 @@ const HomeShellContent = () => {
                       </Marker>
                     )}
                   {/* Selected stop annotation */}
-                  {selectedStopId && isStopSheetOpen && (() => {
-                    const station = stationLookup.get(selectedStopId);
-                    const lat = station?.latitude ?? undefined;
-                    const lng = station?.longitude ?? undefined;
-                    if (lat == null || lng == null) return null;
-                    const tokens = Array.from(
-                      new Map(
-                        (station?.routesServing ?? [])
-                          .map((route) => getLineToken(route, themeMode))
-                          .map((t) => [t.id, t]),
-                      ).values(),
-                    );
-                    const colors = tokens.length > 0 ? tokens.map((t) => t.color) : undefined;
-                    return (
-                      <MapAnnotation
-                        key={`annotation-${selectedStopId}`}
-                        latitude={lat}
-                        longitude={lng}
-                        label={selectedStopName ?? station?.name ?? ""}
-                        colors={colors}
-                        onClose={() => {
-                          closeStopSheet();
-                        }}
-                      />
-                    );
-                  })()}
+                  {selectedStopAnnotation}
                 </MapGL>
                 {lineShapesQuery.isLoading && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/20 text-sm text-slate-300">
@@ -2812,9 +2867,14 @@ const HomeShellContent = () => {
       </main>
       {selectedStopId && isStopSheetOpen && (
         <>
-          <div className="fixed inset-0 z-30 pointer-events-none" aria-hidden="true">
-            <div className="absolute inset-0 bg-black/70" />
-          </div>
+      <div
+        ref={stopSheetBackdropRef}
+        className="fixed inset-x-0 bottom-0 z-30 pointer-events-none"
+        aria-hidden="true"
+        style={{ height: preferStackedLayout ? mobileSheetHeight : "100%" }}
+      >
+        <div className="absolute inset-0 bg-black/70" />
+      </div>
           <StopSheetPanel
             stopId={selectedStopId}
             platformStopIds={selectedPlatformStopIds ?? undefined}
@@ -2825,6 +2885,8 @@ const HomeShellContent = () => {
             mapPanelRef={mapSectionRef}
             panelRootRef={stopSheetRootRef}
             allowRefs={stopSheetSafeRefs}
+            mobileSheetHeight={mobileSheetHeight}
+            overlayHeight={preferStackedLayout ? mobileSheetHeight : "100%"}
           />
         </>
       )}

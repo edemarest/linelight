@@ -67,6 +67,10 @@ const telemetryState: MbtaTelemetryState = {
   lastSuccessPath: null,
 };
 
+// If MBTA returns a Retry-After / 429, set this to the timestamp (ms)
+// until which we should avoid making new requests.
+let globalBackoffUntil: number | null = null;
+
 export const getMbtaClientTelemetry = () => {
   const averageDelay =
     telemetryState.rateLimitDelayCount === 0
@@ -91,6 +95,17 @@ const recordRateLimitDelay = (waitMs: number) => {
 };
 
 const acquireRateLimitSlot = async (path: string) => {
+  // Respect any server-sent global backoff first (Retry-After from MBTA)
+  if (globalBackoffUntil && Date.now() < globalBackoffUntil) {
+    const waitMs = Math.max(0, globalBackoffUntil - Date.now());
+    logger.debug("MBTA server requested backoff, delaying request", { path, waitMs });
+    recordRateLimitDelay(waitMs);
+    await delay(waitMs);
+    // If we've waited past the backoff timestamp, clear it so other callers proceed.
+    if (Date.now() >= globalBackoffUntil) {
+      globalBackoffUntil = null;
+    }
+  }
   while (true) {
     const now = Date.now();
     while (requestTimestamps.length > 0) {
@@ -233,6 +248,8 @@ export class MbtaClient {
       try {
         const response = await fetch(url, init);
         if (response.ok) {
+          // Clear any server-suggested global backoff on successful response.
+          globalBackoffUntil = null;
           telemetryState.totalRequests += 1;
           telemetryState.lastSuccessAt = new Date().toISOString();
           telemetryState.lastSuccessPath = path;
@@ -248,18 +265,56 @@ export class MbtaClient {
           throw terminalError;
         }
 
+        // Retryable response (includes 429). Record telemetry and attempt to
+        // respect any server-provided `Retry-After` header for 429s.
         recordRetryableResponse(response.status, path);
         lastError = new Error(
           `Retryable status ${response.status} for ${path}${body ? ` - ${body.slice(0, 180)}` : ""}`,
         );
-        const waitMs = computeBackoff(attempt);
-        logger.warn("MBTA request hit retryable status, backing off", {
-          path,
-          status: response.status,
-          attempt,
-          waitMs,
-        });
-        await delay(waitMs);
+
+        // If MBTA provided a Retry-After header for 429, honor it exactly.
+        if (response.status === 429) {
+          const raw = response.headers.get("retry-after");
+          let retryAfterMs: number | null = null;
+          if (raw) {
+            const secs = Number(raw);
+            if (!Number.isNaN(secs) && secs > 0) {
+              retryAfterMs = Math.round(secs * 1000);
+            } else {
+              // Try parsing HTTP date
+              const parsed = Date.parse(raw);
+              if (!Number.isNaN(parsed)) {
+                retryAfterMs = Math.max(0, parsed - Date.now());
+              }
+            }
+          }
+
+          if (retryAfterMs && retryAfterMs > 0) {
+            // Set a global backoff window so other requests wait in acquireRateLimitSlot.
+            globalBackoffUntil = Date.now() + retryAfterMs;
+            logger.warn("MBTA returned 429; honoring Retry-After", { path, status: response.status, retryAfterMs });
+            recordRateLimitDelay(retryAfterMs);
+            await delay(retryAfterMs);
+          } else {
+            const waitMs = computeBackoff(attempt);
+            logger.warn("MBTA request hit retryable status (429), backing off", {
+              path,
+              status: response.status,
+              attempt,
+              waitMs,
+            });
+            await delay(waitMs);
+          }
+        } else {
+          const waitMs = computeBackoff(attempt);
+          logger.warn("MBTA request hit retryable status, backing off", {
+            path,
+            status: response.status,
+            attempt,
+            waitMs,
+          });
+          await delay(waitMs);
+        }
       } catch (error) {
         recordRetryableResponse(undefined, path);
         lastError = error;

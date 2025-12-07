@@ -8,7 +8,12 @@ WORKDIR /app
 COPY web/package.json web/package-lock.json ./web/
 COPY packages ./packages
 RUN cd /app/packages/core && npm install && npm run build
-RUN cd web && npm install
+RUN cd web \
+	&& npm config set fetch-retries 5 \
+	&& npm config set fetch-retry-factor 10 \
+	&& npm config set fetch-retry-mintimeout 20000 \
+	&& npm config set fetch-retry-maxtimeout 120000 \
+	&& npm install --prefer-offline --no-audit --no-fund --unsafe-perm
 
 FROM base AS builder
 WORKDIR /app

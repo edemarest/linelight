@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchStationBoard, fetchRouteShapes } from "@/lib/api";
 import type {
@@ -48,9 +48,12 @@ interface StopSheetPanelProps {
   mapPanelRef?: RefObject<HTMLElement | null>;
   panelRootRef?: RefObject<HTMLElement | null>;
   allowRefs?: Array<RefObject<HTMLElement | null>>;
+  mobileSheetHeight?: string;
+  overlayHeight?: string;
 }
 
 const NO_EXTRA_REFS: ReadonlyArray<RefObject<HTMLElement | null>> = [];
+const MOBILE_SHEET_DEFAULT_HEIGHT = "88vh";
 
 const statusTone = (status?: string) => {
   switch (status) {
@@ -392,6 +395,8 @@ export const StopSheetPanel = ({
   mapPanelRef,
   panelRootRef,
   allowRefs,
+  mobileSheetHeight,
+  overlayHeight,
 }: StopSheetPanelProps) => {
   const safeAllowRefs = allowRefs ?? NO_EXTRA_REFS;
   const { mode: themeMode } = useThemeMode();
@@ -407,10 +412,9 @@ export const StopSheetPanel = ({
   const stopOptions = useMemo(() => {
     const base = platformStopIds && platformStopIds.length > 0 ? platformStopIds : [stopId];
     const deduped = Array.from(new Set(base.filter(Boolean)));
-    if (!deduped.includes(stopId)) {
-      deduped.unshift(stopId);
-    }
-    return deduped;
+    const withoutPrimary = deduped.filter((id) => id !== stopId);
+    // Always try the canonical stop id first so we fetch the full station board.
+    return [stopId, ...withoutPrimary];
   }, [platformStopIds, stopId]);
 
   const boardQuery = useQuery({
@@ -871,6 +875,8 @@ export const StopSheetPanel = ({
 
   const mobileSheetRef = useRef<HTMLElement | null>(null);
   const desktopSheetRef = useRef<HTMLElement | null>(null);
+  const mobileSheetHeightValue = mobileSheetHeight ?? MOBILE_SHEET_DEFAULT_HEIGHT;
+  const overlayHeightValue = overlayHeight ?? mobileSheetHeightValue;
 
   useEffect(() => {
     if (!panelRootRef) return;
@@ -918,6 +924,10 @@ export const StopSheetPanel = ({
 
   const renderSheet = (variant: "mobile" | "desktop") => {
     const sheetRef = variant === "mobile" ? mobileSheetRef : desktopSheetRef;
+    const sheetStyle =
+      variant === "mobile"
+        ? { height: mobileSheetHeightValue, "--stop-sheet-mobile-height": mobileSheetHeightValue }
+        : undefined;
     return (
       <section
         className={`stop-sheet-panel flex h-full w-full flex-col overflow-hidden bg-[color:var(--card)] text-[color:var(--foreground)] shadow-2xl ${
@@ -927,6 +937,7 @@ export const StopSheetPanel = ({
         aria-modal="true"
         aria-label={`Stop sheet for ${stopName}`}
         ref={sheetRef}
+        style={sheetStyle as CSSProperties | undefined}
       >
       <header
         className={`sticky top-0 z-10 overflow-hidden border-b px-6 py-5 ${variant === "desktop" ? "rounded-tr-3xl" : "rounded-t-3xl"}`}
@@ -1044,7 +1055,13 @@ export const StopSheetPanel = ({
           )}
         </div>
       </header>
-      <div className="stop-sheet-scroll flex-1 overflow-y-auto pb-8 pt-5" style={{ background: "var(--surface-soft)" }}>
+      <div
+        className="stop-sheet-scroll flex-1 overflow-y-auto pb-8 pt-5"
+        style={{
+          background: "var(--surface-soft)",
+          paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 1.5rem)`,
+        }}
+      >
         {boardQuery.isLoading && <div className="px-6"><LoadingSkeleton /></div>}
         {boardQuery.isError && (
           <div className="px-6">
@@ -1179,7 +1196,11 @@ export const StopSheetPanel = ({
   return (
     <>
       <div className="fixed inset-0 z-50 flex flex-col md:hidden pointer-events-none" aria-modal="true" role="presentation">
-        <div className="mt-auto h-[88vh] w-full pointer-events-auto" onClick={(evt) => evt.stopPropagation()}>
+        <div
+          className="mt-auto w-full pointer-events-auto"
+          style={{ height: overlayHeightValue }}
+          onClick={(evt) => evt.stopPropagation()}
+        >
           {renderSheet("mobile")}
         </div>
       </div>
