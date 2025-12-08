@@ -4,6 +4,8 @@ ARG NODE_VERSION=20.11.1
 FROM node:${NODE_VERSION}-alpine AS base
 
 FROM base AS deps
+ARG NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
 WORKDIR /app
 COPY web/package.json web/package-lock.json ./web/
 COPY packages ./packages
@@ -16,6 +18,8 @@ RUN cd web \
 	&& npm install --prefer-offline --no-audit --no-fund --unsafe-perm
 
 FROM base AS builder
+ARG NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
 WORKDIR /app
 COPY web ./web
 COPY --from=deps /app/packages ./packages
@@ -27,6 +31,8 @@ RUN npm run build
 FROM base AS runtime
 WORKDIR /app/web
 ENV NODE_ENV=production
+ARG NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
 EXPOSE 3000
 COPY --from=builder /app/web/.next/standalone ./
 COPY --from=builder /app/web/.next/static ./.next/static
