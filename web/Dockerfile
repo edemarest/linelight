@@ -6,6 +6,8 @@ FROM node:${NODE_VERSION}-bookworm-slim AS base
 FROM base AS deps
 ARG NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
+ENV NODE_OPTIONS=--max-old-space-size=450
+ENV NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY web/package.json web/package-lock.json ./web/
@@ -56,6 +58,8 @@ NODE
 FROM base AS builder
 ARG NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
+ENV NODE_OPTIONS=--max-old-space-size=450
+ENV NEXT_TELEMETRY_DISABLED=1
 WORKDIR /app
 COPY web ./web
 COPY packages ./packages
