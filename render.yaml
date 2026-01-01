@@ -52,3 +52,5 @@ services:
           type: web
           name: linelight-api
           property: hostUrl
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=450

@@ -24,7 +24,9 @@ WORKDIR /app
 COPY web ./web
 COPY --from=deps /app/packages ./packages
 COPY --from=deps /app/web/node_modules ./web/node_modules
-RUN rm -rf /app/web/node_modules/@linelight/core && cp -R /app/packages/core /app/web/node_modules/@linelight/core
+# Render images based on alpine don't include git by default.
+# Our build-info script calls git opportunistically; install it so it can succeed when available.
+RUN apk add --no-cache git
 WORKDIR /app/web
 RUN npm run build
 
@@ -37,4 +39,13 @@ EXPOSE 3000
 COPY --from=builder /app/web/.next/standalone ./
 COPY --from=builder /app/web/.next/static ./.next/static
 COPY --from=builder /app/web/public ./public
+# In a monorepo, Next standalone output may preserve the app folder name
+# (e.g. place server.js under ./web/server.js). In that case, the server
+# will look for assets under ./web/.next/static and ./web/public.
+RUN if [ -d "./web" ]; then \
+			mkdir -p ./web/.next && \
+			rm -rf ./web/.next/static ./web/public && \
+			cp -R ./.next/static ./web/.next/static && \
+			cp -R ./public ./web/public; \
+		fi
 CMD ["sh", "-c", "export PORT=${PORT:-3000} HOSTNAME=0.0.0.0; if [ -f server.js ]; then node server.js; elif [ -f web/server.js ]; then node web/server.js; else echo 'Error: server.js not found' >&2; exit 1; fi"]
