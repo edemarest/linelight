@@ -182,6 +182,63 @@ app.get("/api/stations", (req, res) => {
   res.json({ stations });
 });
 
+app.get("/api/stops/lookup", async (req, res) => {
+  const raw = typeof req.query.ids === "string" ? req.query.ids : "";
+  const ids = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .slice(0, 200);
+
+  const stopsEntry = polling.cache.getStops();
+  if (!stopsEntry) {
+    return res.json({ ready: false, stops: [] });
+  }
+
+  const stopLookup = new Map(stopsEntry.data.map((stop) => [stop.id, stop]));
+  const missingIds = ids.filter((id) => !stopLookup.has(id));
+
+  if (missingIds.length > 0) {
+    const ensureArray = <T,>(value: T | T[] | null | undefined): T[] => {
+      if (!value) return [];
+      return Array.isArray(value) ? value : [value];
+    };
+
+    const chunkSize = 80;
+    for (let start = 0; start < missingIds.length; start += chunkSize) {
+      const batch = missingIds.slice(start, start + chunkSize);
+      try {
+        const response = await polling.client.getStops({
+          "filter[id]": batch.join(","),
+          "page[limit]": Math.max(50, batch.length),
+          include: "parent_station",
+        });
+        const fetched = [
+          ...ensureArray(response.data),
+          ...ensureArray(response.included).filter((resource) => resource.type === "stop"),
+        ];
+        fetched.forEach((stop) => {
+          stopLookup.set((stop as any).id, stop as any);
+        });
+      } catch (error) {
+        logger.warn("Stop lookup failed to fetch missing stops from MBTA", { message: String(error) });
+      }
+    }
+  }
+
+  const stops = ids
+    .map((id) => stopLookup.get(id))
+    .filter(Boolean)
+    .map((stop) => ({
+      stopId: stop!.id,
+      name: stop!.attributes.name,
+      latitude: stop!.attributes.latitude,
+      longitude: stop!.attributes.longitude,
+    }));
+
+  return res.json({ ready: true, stops });
+});
+
 app.get("/api/vehicles", (req, res) => {
   const modeParam = typeof req.query.mode === "string" ? req.query.mode : undefined;
   const modeFilter = modeParam && isMode(modeParam) ? modeParam : undefined;

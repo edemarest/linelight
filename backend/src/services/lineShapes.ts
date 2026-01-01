@@ -1,7 +1,8 @@
 import type { MbtaCache } from "../cache/mbtaCache";
 import type { Coordinate } from "../models/domain";
-import type { MbtaRoute } from "../models/mbta";
+import type { MbtaLine, MbtaRoute } from "../models/mbta";
 import type { MbtaClient } from "../mbta/client";
+import { extractRelationshipIds } from "../utils/jsonApi";
 import { logger } from "../utils/logger";
 import polyline from "@mapbox/polyline";
 
@@ -36,6 +37,27 @@ const fetchShapesForLine = async (
     .filter((coords) => coords.length > 1);
 };
 
+const getLineRouteIds = (line: MbtaLine): string[] => {
+  const routeIds = extractRelationshipIds(line.relationships?.routes);
+  return routeIds.length > 0 ? routeIds : [];
+};
+
+const formatLineColor = (line: MbtaLine, routesEntry: MbtaRoute[] | undefined, routeIds: string[]) => {
+  const rawColor = line.attributes.color;
+  if (rawColor) return formatColor(rawColor);
+  if (!routesEntry) return null;
+  const route = routeIds.map((id) => routesEntry.find((r) => r.id === id)).find(Boolean);
+  return route ? formatColor(route.attributes.color) : null;
+};
+
+const formatLineTextColor = (line: MbtaLine, routesEntry: MbtaRoute[] | undefined, routeIds: string[]) => {
+  const rawTextColor = line.attributes.text_color;
+  if (rawTextColor) return formatColor(rawTextColor);
+  if (!routesEntry) return null;
+  const route = routeIds.map((id) => routesEntry.find((r) => r.id === id)).find(Boolean);
+  return route ? formatColor(route.attributes.text_color) : null;
+};
+
 const ensureArray = <T>(value: T | T[] | undefined | null): T[] => {
   if (!value) return [];
   return Array.isArray(value) ? value : [value];
@@ -46,6 +68,46 @@ export const buildLineShapes = async (
   client: MbtaClient,
   lineId: string,
 ): Promise<LineShapePayload | null> => {
+  const linesEntry = cache.getLines();
+  const routesEntry = cache.getRoutes();
+  const cachedLine = linesEntry?.data.find((line) => line.id === lineId);
+  const routeIdsForLine = cachedLine ? getLineRouteIds(cachedLine) : [];
+
+  if (cachedLine && routeIdsForLine.length > 0) {
+    let shapesEntry = cache.getShapes();
+    let shapes = shapesEntry?.data.get(lineId);
+
+    if (shapes && shapes.length > 0) {
+      logger.info("Line shapes cache hit (line)", { lineId, routes: routeIdsForLine.length, count: shapes.length });
+    } else {
+      logger.info("Line shapes cache miss — fetching from MBTA (line)", { lineId, routes: routeIdsForLine.length });
+      const fetchedShapes = (
+        await Promise.all(routeIdsForLine.map((routeId) => fetchShapesForLine(client, routeId)))
+      )
+        .flat()
+        .filter((coords) => coords.length > 1);
+
+      if (fetchedShapes.length === 0) {
+        logger.warn("No shapes returned from MBTA for line routes", { lineId, routes: routeIdsForLine });
+        return null;
+      }
+
+      const shapeMap = shapesEntry?.data ?? new Map();
+      shapeMap.set(lineId, fetchedShapes);
+      cache.setShapes(shapeMap);
+      shapesEntry = cache.getShapes();
+      shapes = fetchedShapes;
+      logger.info("Fetched line shapes (line)", { lineId, fetchedCount: shapes.length });
+    }
+
+    return {
+      lineId,
+      color: formatLineColor(cachedLine, routesEntry?.data, routeIdsForLine),
+      textColor: formatLineTextColor(cachedLine, routesEntry?.data, routeIdsForLine),
+      shapes,
+    };
+  }
+
   let shapesEntry = cache.getShapes();
   let shapes = shapesEntry?.data.get(lineId);
 
@@ -66,7 +128,6 @@ export const buildLineShapes = async (
     logger.info("Fetched line shapes", { lineId, fetchedCount: shapes.length });
   }
 
-  const routesEntry = cache.getRoutes();
   const routeMeta: MbtaRoute | undefined = routesEntry?.data.find((route) => route.id === lineId);
 
   return {

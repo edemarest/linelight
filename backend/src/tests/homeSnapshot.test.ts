@@ -180,3 +180,40 @@ test("buildHomeSnapshot merges platforms under one station and preserves directi
   assert.equal(routeWithDirection?.direction, "Inbound");
   assert.equal(routeWithDirection?.directionId, 0);
 });
+
+test("buildHomeSnapshot falls back to suggested stations when no nearby stops are detected", async () => {
+  const { parentStation, inboundPlatform, outboundPlatform, routes, snapshots } = buildFixture();
+  const cache = new MbtaCache();
+  cache.setStops([parentStation, inboundPlatform, outboundPlatform]);
+  cache.setRoutes(routes);
+  cache.setStopRouteMap(
+    new Map([
+      [inboundPlatform.id, new Set(["Blue"])],
+      [outboundPlatform.id, new Set(["Green-B"])],
+    ]),
+  );
+
+  const result = await buildHomeSnapshot(
+    cache,
+    fakeClient,
+    {
+      lat: 0,
+      lng: 0,
+      radiusMeters: 250,
+      limit: 5,
+      favoriteStopIds: [],
+    },
+    {
+      fetchStopSnapshot: async (_client, stopId) => {
+        const snapshot = snapshots.get(stopId);
+        if (!snapshot) {
+          return { stopId, generatedAt: new Date().toISOString(), departures: [] };
+        }
+        return snapshot;
+      },
+    },
+  );
+
+  assert.ok(result.nearby.length > 0, "returns suggested nearby stops");
+  assert.equal(result.nearby[0]?.stopId, parentStation.id);
+});

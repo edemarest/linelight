@@ -5,7 +5,7 @@
   "scripts": {
     "generate-build-info": "node ./scripts/generate-build-info.js",
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run generate-build-info && next build",
     "start": "next start",
     "lint": "eslint"
   },

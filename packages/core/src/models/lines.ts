@@ -1,39 +1,88 @@
 import type { IsoTimestamp, Mode, LatLng } from "./common";
-import type { StationAlert } from "./stationBoard";
+
+// These models represent the current LineLight backend API contract.
+// The backend provides richer line detail and computed insights than the initial draft models.
 
 export interface LineSummary {
-  id: string;
-  shortName: string;
+  lineId: string;
+  displayName: string;
+  color: string;
   mode: Mode;
-  status: "good" | "minor" | "major" | "unknown";
+  hasAlerts: boolean;
+  vehicleCount: number;
+  updatedAt: IsoTimestamp;
 }
 
-export interface LineOverview {
-  line: LineSummary;
-  segments: LineSegmentHealth[];
-  headwaySummary: HeadwaySummary;
-  alerts: StationAlert[];
+export interface LinesResponse {
+  ready: boolean;
+  lines: LineSummary[];
+  generatedAt: IsoTimestamp;
 }
 
-export interface LineSegmentHealth {
+export type SegmentHealth = "good" | "minor_issues" | "major_issues" | "no_service";
+
+export interface LineAlertSummary {
+  alertId: string;
+  header: string;
+  severity: number | null;
+  effect: string | null;
+  lifecycle: string | null;
+}
+
+export interface LineSegmentStatus {
   segmentId: string;
   fromStopId: string;
   toStopId: string;
-  status: "good" | "minor" | "major" | "unknown";
-  notes?: string;
+  directionId: 0 | 1 | null;
+  headwayMinutes: number | null;
+  headwayDeviationMinutes: number | null;
+  health: SegmentHealth;
+  coordinates: LatLng[];
 }
 
-export interface HeadwaySummary {
+export interface LineOverview {
+  lineId: string;
+  displayName: string;
+  color: string;
+  mode: Mode;
+  activeVehicles: number;
+  expectedVehicles: number | null;
   typicalHeadwayMinutes: number | null;
-  observedHeadwayMinutes: number | null;
-  reliabilityScore?: number;
+  alerts: LineAlertSummary[];
+  segments: LineSegmentStatus[];
+  shapePaths: LatLng[][];
+  updatedAt: IsoTimestamp;
+}
+
+export interface LineOverviewResponse {
+  line: LineOverview;
+}
+
+export interface LineInsight {
+  lineId: string;
+  displayName: string;
+  mode: Mode;
+  painScore: number;
+  averageDelayMinutes: number | null;
+  headwayVarianceMinutes: number | null;
+  activeAlerts: number;
+  activeVehicles: number;
+}
+
+export interface SegmentTroubleSummary {
+  lineId: string;
+  summary: string;
+  severity: number;
 }
 
 export interface SystemInsights {
   generatedAt: IsoTimestamp;
-  lines: LineSummary[];
-  worstSegments: LineSegmentHealth[];
-  notes?: string;
+  lines: LineInsight[];
+  topTroubleSegments: SegmentTroubleSummary[];
+}
+
+export interface SystemInsightsResponse {
+  insights: SystemInsights;
 }
 
 export interface LineShapeResponse {

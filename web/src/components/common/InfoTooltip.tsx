@@ -11,19 +11,23 @@ interface InfoTooltipProps {
 export const InfoTooltip = ({ content, iconSize = "sm" }: InfoTooltipProps) => {
   const [isVisible, setIsVisible] = useState(false);
   const [position, setPosition] = useState({ top: 0, left: 0 });
+  const [arrowLeftPx, setArrowLeftPx] = useState<string>("50%");
   const [mounted, setMounted] = useState(false);
-  const triggerRef = useRef<HTMLElement | null>(null);
+  const triggerRef = useRef<HTMLSpanElement | null>(null);
 
   const fontSize = iconSize === "sm" ? "text-xs" : "text-sm";
 
   useLayoutEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
   }, []);
 
   useLayoutEffect(() => {
     if (isVisible && triggerRef.current) {
       const updatePosition = () => {
-        const triggerRect = triggerRef.current!.getBoundingClientRect();
+        const trigger = triggerRef.current;
+        if (!trigger) return;
+        const triggerRect = trigger.getBoundingClientRect();
         
         const tooltipWidth = 240;
         const tooltipHeight = 60;
@@ -38,6 +42,11 @@ export const InfoTooltip = ({ content, iconSize = "sm" }: InfoTooltipProps) => {
         }
         
         setPosition({ top, left });
+
+        // Arrow should point to the trigger's center.
+        const triggerCenterX = triggerRect.left + triggerRect.width / 2;
+        const arrowLeft = triggerCenterX - left;
+        setArrowLeftPx(`${arrowLeft}px`);
       };
       
       updatePosition();
@@ -65,7 +74,7 @@ export const InfoTooltip = ({ content, iconSize = "sm" }: InfoTooltipProps) => {
       onMouseLeave={handleMouseLeave}
     >
       <div className="info-tooltip-arrow" style={{
-        left: triggerRef.current ? `${triggerRef.current.getBoundingClientRect().left + 9 - position.left}px` : '50%',
+        left: arrowLeftPx,
       }} />
       <p className="text-xs leading-snug">{content}</p>
     </div>,
@@ -75,7 +84,7 @@ export const InfoTooltip = ({ content, iconSize = "sm" }: InfoTooltipProps) => {
   return (
     <>
       <span
-        ref={triggerRef as any}
+        ref={triggerRef}
         role="button"
         tabIndex={0}
         className={`info-tooltip-trigger ${fontSize}`}

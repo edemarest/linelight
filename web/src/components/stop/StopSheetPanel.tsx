@@ -9,14 +9,11 @@ import type {
   StationDeparture,
   StationAlert,
   StationFacility,
-  StationBoardPrimary,
   StationEta,
-  StationBoardDetails,
   LineShapeResponse,
 } from "@linelight/core";
 import { formatEta } from "@/lib/time";
 import { EtaSourceIndicator } from "./EtaSourceIndicator";
-import { LineBadge } from "@/components/common/LineBadge";
 import { DirectionArrowIcon } from "@/components/common/DirectionArrowIcon";
 import { InfoTooltip } from "@/components/common/InfoTooltip";
 import {
@@ -28,7 +25,6 @@ import {
   FiZap,
   FiMapPin,
   FiXCircle,
-  FiChevronRight,
   FiClock,
   FiMap,
 } from "react-icons/fi";
@@ -175,11 +171,6 @@ const mapEtaToDeparture = (
   tripId: eta.tripId ?? null,
 });
 
-const getDepartureDirectionKey = (departure: StationDeparture) => {
-  const directionValue = departure.direction ?? "";
-  return `${departure.routeId}-${directionValue}`;
-};
-
 const getRouteDotLabel = (routeLabel: string, routeId: string): string => {
   if (routeId.startsWith("Green-")) {
     return routeId.split("-")[1] ?? "G";
@@ -188,16 +179,6 @@ const getRouteDotLabel = (routeLabel: string, routeId: string): string => {
     return routeLabel;
   }
   return routeLabel.charAt(0).toUpperCase();
-};
-
-const getRouteLabelText = (routeLabel: string, routeId: string): string => {
-  if (routeId.startsWith("Green-")) {
-    return routeId.split("-")[1] ?? "G";
-  }
-  if (/^\d+$/.test(routeLabel)) {
-    return routeLabel;
-  }
-  return routeLabel;
 };
 
 const LoadingSkeleton = () => (
@@ -331,7 +312,6 @@ const DepartureList = ({
       {departures.map((departure, idx) => {
         const tone = statusTone(departure.status);
         const tripId = (departure as StationDepartureWithTrip).tripId ?? null;
-        const isLive = departure.source === "prediction" || departure.source === "blended";
         const lineToken = getLineToken(departure.routeId, themeMode);
         const isStriped = idx % 2 === 1;
         return (
@@ -407,8 +387,6 @@ export const StopSheetPanel = ({
   const headerTitleColor = isDarkTheme ? "rgba(255,255,255,0.98)" : "rgba(5,5,7,0.95)";
   const closeButtonBg = isDarkTheme ? "rgba(6,7,12,0.7)" : "rgba(255,255,255,0.95)";
   const closeButtonColor = isDarkTheme ? "#f8fafc" : "#0f172a";
-  const headerChipBg = isDarkTheme ? "rgba(5,6,11,0.55)" : "rgba(255,255,255,0.75)";
-  const headerChipText = isDarkTheme ? "rgba(247,248,250,0.85)" : "rgba(15,23,42,0.75)";
   const stopOptions = useMemo(() => {
     const base = platformStopIds && platformStopIds.length > 0 ? platformStopIds : [stopId];
     const deduped = Array.from(new Set(base.filter(Boolean)));
@@ -440,42 +418,6 @@ export const StopSheetPanel = ({
 
 
   const board = boardQuery.data;
-  useEffect(() => {
-    console.log("[StopSheet] board query state", {
-      stopId,
-      stopOptions,
-      status: boardQuery.status,
-      isFetching: boardQuery.isFetching,
-      isError: boardQuery.isError,
-      error: boardQuery.error ? String(boardQuery.error) : null,
-    });
-  }, [boardQuery.status, boardQuery.isFetching, boardQuery.isError, boardQuery.error, stopId, stopOptions]);
-  useEffect(() => {
-    if (!boardQuery.isError || !boardQuery.error) return;
-    console.error("[StopSheet] board query failed", {
-      stopId,
-      stopOptions,
-      error: boardQuery.error,
-    });
-  }, [boardQuery.isError, boardQuery.error, stopId, stopOptions]);
-  useEffect(() => {
-    if (!boardQuery.isSuccess || board) return;
-    console.warn("[StopSheet] board query returned no data", { stopId, stopOptions });
-  }, [boardQuery.isSuccess, board, stopId, stopOptions]);
-  useEffect(() => {
-    if (!board) return;
-    console.log("[StopSheet] board payload", {
-      stopId,
-      stopName: board.primary.stopName,
-      routes: board.primary.routes.map((route) => ({
-        routeId: route.routeId,
-        direction: route.direction,
-        primaryEta: route.primaryEta?.etaMinutes,
-        shortName: route.shortName,
-      })),
-      departureSamples: board.details?.departures?.slice(0, 6),
-    });
-  }, [board, stopId]);
   const routes = useMemo(() => board?.primary.routes ?? [], [board]);
   const routeGroups = useMemo<RouteGroup[]>(() => {
     const map = new Map<string, RouteGroup>();
@@ -771,21 +713,6 @@ export const StopSheetPanel = ({
       upcomingDepartures: uniqueDepartures.slice(0, 12),
     };
   }, [board?.details?.departures, activeRoute]);
-  useEffect(() => {
-    console.log("[StopSheet] hero/upcoming computation", {
-      stopId,
-      activeRouteId: activeRoute?.routeId,
-      direction: activeRoute?.direction,
-      heroDestinationRaw: heroDeparture?.destination,
-      heroEta: heroDeparture?.etaMinutes ?? activeRoute?.primaryEta?.etaMinutes ?? null,
-      detailedCount:
-        board?.details?.departures?.filter(
-          (departure) =>
-            activeRoute && departure.routeId === activeRoute.routeId && departure.direction === activeRoute.direction,
-        ).length ?? 0,
-      upcomingCount: upcomingDepartures.length,
-    });
-  }, [stopId, activeRoute, heroDeparture, board?.details?.departures, upcomingDepartures]);
   const heroTone = heroDeparture?.status ? statusTone(heroDeparture.status) : null;
   const heroSource = heroDeparture?.source ?? activeRoute?.primaryEta?.source;
   const heroTripId =
@@ -796,7 +723,6 @@ export const StopSheetPanel = ({
     heroDeparture?.scheduledTime ??
     activeRoute?.primaryEta?.predictedTime ??
     activeRoute?.primaryEta?.scheduledTime;
-  const activeRouteDestinationKey = activeRoute ? `${activeRoute.routeId}-${activeRoute.direction}` : null;
   const activeRouteDestinationLabel = useMemo(() => {
     if (!activeRoute) return null;
     const routeKey = `${activeRoute.routeId}-${activeRoute.direction}`;
@@ -809,20 +735,7 @@ export const StopSheetPanel = ({
   }, [activeRoute, routeDestinationMap]);
   const heroDestinationLabel =
     normalizeDestinationLabel(heroDeparture?.destination) ?? activeRouteDestinationLabel ?? "Next departure";
-  useEffect(() => {
-    console.log("[StopSheet] active route destination resolution", {
-      stopId,
-      activeRouteId: activeRoute?.routeId,
-      direction: activeRoute?.direction,
-      destinationFromMap: activeRoute ? routeDestinationMap.get(`${activeRoute.routeId}-${activeRoute.direction}`) : null,
-      heroDepartureDestination: heroDeparture?.destination,
-      heroDestinationLabel,
-    });
-  }, [stopId, activeRoute, routeDestinationMap, heroDeparture, heroDestinationLabel]);
-  const directionLabel = humanizeDirection(activeRoute?.direction);
   const routeLabel = activeRoute?.shortName ?? activeRoute?.routeId ?? null;
-  const heroLineToken = activeRoute ? getLineToken(activeRoute.routeId, themeMode) : null;
-  const heroDirectionToken = activeRoute ? getDirectionToken(toDirectionId(activeRoute.direction), directionLabel, themeMode) : null;
   const headerHue = useMemo(() => getStopHue(routeColorIds, themeMode), [routeColorIds, themeMode]);
   const heroHue = useMemo(
     () => getStopHue(activeRoute ? [activeRoute.routeId] : routeColorIds, themeMode),
@@ -1067,7 +980,7 @@ export const StopSheetPanel = ({
           <div className="px-6">
             <div className="panel border-[color:var(--line-red)]/40 text-sm" style={{ background: "color-mix(in srgb, var(--line-red) 8%, var(--card))" }}>
               <p className="font-semibold" style={{ color: "var(--line-red)" }}>
-                We couldn't load departures for this stop.
+                We couldn&apos;t load departures for this stop.
               </p>
               <p className="mt-2 text-xs text-muted">
                 Please try again. If the issue persists, check your connection.
@@ -1195,7 +1108,7 @@ export const StopSheetPanel = ({
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex flex-col md:hidden pointer-events-none" aria-modal="true" role="presentation">
+      <div className="fixed inset-0 z-50 flex flex-col md:hidden pointer-events-none">
         <div
           className="mt-auto w-full pointer-events-auto"
           style={{ height: overlayHeightValue }}
@@ -1204,7 +1117,7 @@ export const StopSheetPanel = ({
           {renderSheet("mobile")}
         </div>
       </div>
-      <div className="fixed inset-0 z-50 hidden md:block pointer-events-none" aria-modal="true" role="presentation">
+      <div className="fixed inset-0 z-50 hidden md:block pointer-events-none">
         <div className="flex h-full w-full justify-start">
           <div className="pointer-events-auto flex h-full" onClick={(evt) => evt.stopPropagation()}>
             {renderSheet("desktop")}

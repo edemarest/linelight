@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import MapGL, { Marker, type MapLayerMouseEvent, type MapRef, type ViewState } from "react-map-gl/maplibre";
 import DeckGL from "@deck.gl/react";
 import { PathLayer } from "@deck.gl/layers";
@@ -18,27 +18,22 @@ import {
   type StationPlatformMarker,
   type StationSummary,
 } from "@/lib/api";
-import type { HomeStopSummary, HomeRouteSummary, HomeResponse } from "@linelight/core";
+import type { HomeStopSummary, HomeResponse } from "@linelight/core";
 import { StopSheetPanel } from "@/components/stop/StopSheetPanel";
 import {
   FiMapPin,
   FiCrosshair,
   FiStar,
   FiZap,
-  FiSun,
-  FiMoon,
   FiSearch,
   FiEdit,
   FiTrash2,
   FiBookmark,
   FiArrowRight,
-  FiHome,
   FiMap,
-  FiBarChart2,
   FiSliders,
   FiChevronDown,
   FiX,
-  FiMenu,
 } from "react-icons/fi";
 import { FaStar } from "react-icons/fa";
 import { formatEta, formatEtaChip } from "@/lib/time";
@@ -46,10 +41,9 @@ import { useAppState } from "@/state/appState";
 import { EtaSourceIndicator } from "@/components/stop/EtaSourceIndicator";
 import { getDirectionToken, getLineToken } from "@/lib/designTokens";
 import type { LineToken } from "@/lib/designTokens";
-import { getLandmarkImage, getStopHue } from "@/lib/stopStyling";
+import { getStopHue } from "@/lib/stopStyling";
 import { DirectionArrowIcon } from "@/components/common/DirectionArrowIcon";
-import { ThemeProvider, useThemeMode } from "@/hooks/useThemeMode";
-import BuildInfoBadge from "@/components/BuildInfoBadge";
+import { useThemeMode } from "@/hooks/useThemeMode";
 import { breakpointClass, useBreakpoint } from "@/hooks/useBreakpoint";
 import { useResponsiveMapHeights } from "@/hooks/useResponsiveMapHeights";
 
@@ -63,12 +57,13 @@ const BASE_MAP_PADDING = { top: 40, right: 40, bottom: 40, left: 40 };
 const FOLLOW_SAFE_AREA = FOLLOW_RIBBON_HEIGHT + 80;
 
 const SAVED_LOCATIONS_KEY = "linelight:savedLocations";
+const DEVICE_LOCATION_PREF_KEY = "linelight:deviceLocation";
+type DeviceLocationPreference = "off" | "on";
+
 const generateId = () =>
   typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.round(Math.random() * 1_000_000)}`;
-
-type PersistedViewState = Pick<ViewState, "latitude" | "longitude" | "zoom" | "bearing" | "pitch">;
 
 interface SavedLocation {
   id: string;
@@ -239,13 +234,6 @@ const MapAnnotation = ({
   );
 };
 
-const NAV_BUTTON_CLASS = "btn btn-ghost focus-outline inline-flex items-center gap-1.5 text-sm font-semibold";
-const PRIMARY_NAV_LINKS = [
-  { href: "/", label: "Home", icon: <FiHome /> },
-  { href: "/lines", label: "Lines", icon: <FiMap /> },
-  { href: "/insights", label: "Insights", icon: <FiBarChart2 /> },
-] as const;
-
 type LineOptionId = (typeof LINE_OPTIONS)[number]["id"];
 const GREEN_LINE_GROUP: LineOptionId[] = ["Green-B", "Green-C", "Green-D", "Green-E"];
 
@@ -347,22 +335,6 @@ const SectionHeader = ({ icon, title, action }: { icon: ReactNode; title: string
     {action}
   </div>
 );
-
-const normalizeHomeDestination = (value?: string | null): string | null => {
-  if (!value) return null;
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? null : trimmed;
-};
-
-const getDisplayDestinationLabel = (route: HomeRouteSummary): string => {
-  return (
-    normalizeHomeDestination(route.destination) ??
-    normalizeHomeDestination(route.direction) ??
-    route.shortName ??
-    route.routeId ??
-    "Route"
-  );
-};
 
 const StopSummaryCard = ({
   stop,
@@ -507,11 +479,7 @@ const StopSummaryCard = ({
   );
 };
 
-export const HomeShell = () => (
-  <ThemeProvider>
-    <HomeShellContent />
-  </ThemeProvider>
-);
+export const HomeShell = () => <HomeShellContent />;
 
 const HomePanels = ({
   favorites,
@@ -544,13 +512,18 @@ const HomePanels = ({
   const [nearbyExpanded, setNearbyExpanded] = useState(false);
   const [favoritesOpen, setFavoritesOpen] = useState(!isCompactLayout);
   const [nearbyOpen, setNearbyOpen] = useState(!isCompactLayout);
-  const favoritesToShow = favoritesExpanded ? favorites : favorites.slice(0, 3);
-  const nearbyToShow = nearbyExpanded ? nearby : nearby.slice(0, 3);
-  useEffect(() => {
-    if (!selectedStopId) return;
-    const card = document.querySelector<HTMLElement>(`[data-stop-card="${selectedStopId}"]`);
-    if (!card) return;
-    card.scrollIntoView({ behavior: "smooth", block: "center" });
+	  const favoritesToShow = favoritesExpanded ? favorites : favorites.slice(0, 3);
+	  const nearbyToShow = nearbyExpanded ? nearby : nearby.slice(0, 3);
+	  const showingSuggestedNearby = useMemo(() => {
+	    if (nearby.length === 0) return false;
+	    const minDistance = nearby.reduce((best, stop) => Math.min(best, stop.distanceMeters), Number.POSITIVE_INFINITY);
+	    return Number.isFinite(minDistance) && minDistance > 50_000;
+	  }, [nearby]);
+	  useEffect(() => {
+	    if (!selectedStopId) return;
+	    const card = document.querySelector<HTMLElement>(`[data-stop-card="${selectedStopId}"]`);
+	    if (!card) return;
+	    card.scrollIntoView({ behavior: "smooth", block: "center" });
     card.classList.add("ring-4", "ring-cyan-300");
     const timeout = window.setTimeout(() => {
       card.classList.remove("ring-4", "ring-cyan-300");
@@ -559,6 +532,7 @@ const HomePanels = ({
   }, [selectedStopId]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFavoritesOpen(!isCompactLayout);
     setNearbyOpen(!isCompactLayout);
   }, [isCompactLayout]);
@@ -692,16 +666,21 @@ const HomePanels = ({
             <SectionDivider />
           </>
         )}
-        <div
-          className={`mt-3 space-y-3 transition-[max-height,opacity] duration-200 ${
-            nearbyOpen ? "max-h-[1200px] opacity-100" : "max-h-0 opacity-0"
-          } ${nearbyOpen ? "" : "pointer-events-none"}`}
-        >
-          {nearby.length === 0 ? (
-            nearbyFilteredOut ? (
-              <p className="text-sm" style={{ color: "var(--muted)" }}>
-                Your filters hide nearby stops. Reset them to see everything around you.
-              </p>
+	        <div
+	          className={`mt-3 space-y-3 transition-[max-height,opacity] duration-200 ${
+	            nearbyOpen ? "max-h-[1200px] opacity-100" : "max-h-0 opacity-0"
+	          } ${nearbyOpen ? "" : "pointer-events-none"}`}
+	        >
+	          {nearby.length > 0 && showingSuggestedNearby && (
+	            <p className="text-sm" style={{ color: "var(--muted)" }}>
+	              You&apos;re far from MBTA service — showing suggested hubs.
+	            </p>
+	          )}
+	          {nearby.length === 0 ? (
+	            nearbyFilteredOut ? (
+	              <p className="text-sm" style={{ color: "var(--muted)" }}>
+	                Your filters hide nearby stops. Reset them to see everything around you.
+	              </p>
             ) : (
               <p className="text-sm" style={{ color: "var(--muted)" }}>
                 No nearby stops detected.
@@ -732,9 +711,14 @@ const HomePanels = ({
 };
 
 const HomeShellContent = () => {
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const mapRef = useRef<MapRef | null>(null);
   const preferStopZoomRef = useRef<boolean>(false);
   const prevSelectedLinesRef = useRef<LineOptionId[] | null>(null);
+  const deepLinkAppliedRef = useRef(false);
+  const deepLinkSegmentAppliedRef = useRef(false);
+  const suggestedHubsFocusAppliedRef = useRef(false);
   const mapViewBeforeSheetRef = useRef<{
     center: [number, number];
     zoom: number;
@@ -750,6 +734,11 @@ const HomeShellContent = () => {
     ...INITIAL_VIEW_STATE,
   }));
   const [position, setPosition] = useState(DEFAULT_POSITION);
+  const [deviceLocationPref, setDeviceLocationPref] = useState<DeviceLocationPreference>("off");
+  const [geoPermissionState, setGeoPermissionState] = useState<PermissionState | "unknown">("unknown");
+  const [isDeviceLocationModalOpen, setIsDeviceLocationModalOpen] = useState(false);
+  const [deviceLocationError, setDeviceLocationError] = useState<string | null>(null);
+  const [isRequestingDeviceLocation, setIsRequestingDeviceLocation] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState<string[]>([]);
   const [favoriteIdsLoaded, setFavoriteIdsLoaded] = useState(false);
   const [manualLat, setManualLat] = useState(() => DEFAULT_POSITION.lat.toFixed(5));
@@ -758,13 +747,12 @@ const HomeShellContent = () => {
   const [manualCoordsError, setManualCoordsError] = useState<string | null>(null);
   const { selectedStopId, setSelectedStopId, isStopSheetOpen, setIsStopSheetOpen } = useAppState();
   const [selectedPlatformStopIds, setSelectedPlatformStopIds] = useState<string[] | null>(null);
-  const { mode: themeMode, toggleTheme } = useThemeMode();
+  const { mode: themeMode } = useThemeMode();
   const [activeTripId, setActiveTripId] = useState<string | null>(null);
   const [showBusStops, setShowBusStops] = useState(true);
   const [selectedLines, setSelectedLines] = useState<LineOptionId[]>([]);
   const [greenDrawerOpen, setGreenDrawerOpen] = useState(false);
   const [hasCenteredMap, setHasCenteredMap] = useState(false);
-  const [isNavDrawerOpen, setIsNavDrawerOpen] = useState(false);
   const [selectedStopName, setSelectedStopName] = useState<string | null>(null);
   const [hoveredMarkerId, setHoveredMarkerId] = useState<string | null>(null);
   const [hoveredSavedLocationId, setHoveredSavedLocationId] = useState<string | null>(null);
@@ -841,6 +829,80 @@ const HomeShellContent = () => {
       nextIconColor: "#0369a1",
     };
   }, [themeMode]);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(DEVICE_LOCATION_PREF_KEY);
+      if (stored === "on" || stored === "off") {
+        setDeviceLocationPref(stored);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DEVICE_LOCATION_PREF_KEY, deviceLocationPref);
+    } catch {
+      // ignore
+    }
+  }, [deviceLocationPref]);
+
+  useEffect(() => {
+    if (!("permissions" in navigator) || typeof navigator.permissions?.query !== "function") {
+      setGeoPermissionState("unknown");
+      return;
+    }
+
+    let permissionStatus: PermissionStatus | null = null;
+    const handleChange = () => {
+      if (!permissionStatus) return;
+      setGeoPermissionState(permissionStatus.state);
+    };
+
+    navigator.permissions
+      .query({ name: "geolocation" as PermissionName })
+      .then((status) => {
+        permissionStatus = status;
+        setGeoPermissionState(status.state);
+        status.addEventListener("change", handleChange);
+      })
+      .catch(() => {
+        setGeoPermissionState("unknown");
+      });
+
+    return () => {
+      permissionStatus?.removeEventListener("change", handleChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+    if (selectedLines.length > 0) return;
+
+    const raw = searchParams.get("line") ?? searchParams.get("lineId");
+    if (!raw) return;
+    const normalized = raw.trim();
+    if (!normalized) return;
+
+    const lower = normalized.toLowerCase();
+    if (lower.includes("green") && !normalized.includes("-")) {
+      setSelectedLines(GREEN_LINE_GROUP);
+      deepLinkAppliedRef.current = true;
+      return;
+    }
+
+    const matched =
+      (isLineOptionId(normalized) ? normalized : null) ??
+      LINE_OPTIONS.find((line) => candidateMatchesLineId(normalized, line.id))?.id ??
+      null;
+
+    if (matched) {
+      setSelectedLines([matched]);
+      deepLinkAppliedRef.current = true;
+    }
+  }, [searchParams, selectedLines.length, setSelectedLines]);
   const stopSheetBackdropRef = useRef<HTMLDivElement | null>(null);
   const stopSheetSafeRefs = useMemo(
     () => [followPanelRef, stopSheetBackdropRef],
@@ -1167,6 +1229,55 @@ const HomeShellContent = () => {
   const stationLookup = useMemo(() => {
     return new Map(stationsData.map((station) => [station.stopId, station]));
   }, [stationsData]);
+
+  const stopCoordLookup = useMemo(() => {
+    const lookup = new Map<string, FocusPoint>();
+    stationsData.forEach((station) => {
+      if (station.stopId) {
+        lookup.set(station.stopId, { lat: station.latitude, lng: station.longitude });
+      }
+      (station.platformStopIds ?? []).forEach((platformStopId) => {
+        if (!platformStopId) return;
+        // Some endpoints only reference platform stop ids; fall back to station coords.
+        if (!lookup.has(platformStopId)) {
+          lookup.set(platformStopId, { lat: station.latitude, lng: station.longitude });
+        }
+      });
+      (station.platformMarkers ?? []).forEach((marker) => {
+        if (!marker.stopId) return;
+        if (marker.latitude == null || marker.longitude == null) return;
+        lookup.set(marker.stopId, { lat: marker.latitude, lng: marker.longitude });
+      });
+    });
+    return lookup;
+  }, [stationsData]);
+
+  useEffect(() => {
+    if (deepLinkSegmentAppliedRef.current) return;
+    if (!mapReady) return;
+    if (stopCoordLookup.size === 0) return;
+
+    const focus = searchParams.get("focus");
+    const fromStop = searchParams.get("fromStop") ?? "";
+    const toStop = searchParams.get("toStop") ?? "";
+    if (focus !== "segment" && !fromStop && !toStop) return;
+
+    const points: FocusPoint[] = [];
+    const fromPoint = fromStop ? stopCoordLookup.get(fromStop) ?? null : null;
+    const toPoint = toStop ? stopCoordLookup.get(toStop) ?? null : null;
+    if (fromPoint) points.push(fromPoint);
+    if (toPoint && (!fromPoint || toPoint.lat !== fromPoint.lat || toPoint.lng !== fromPoint.lng)) {
+      points.push(toPoint);
+    }
+    if (points.length === 0) return;
+
+    requestMapFocus({
+      id: `segment-${fromStop || "_"}-${toStop || "_"}`,
+      points,
+      scroll: true,
+    });
+    deepLinkSegmentAppliedRef.current = true;
+  }, [mapReady, requestMapFocus, searchParams, stopCoordLookup]);
   const restoreMapView = useCallback(() => {
     const snapshot = mapViewBeforeSheetRef.current;
     mapViewBeforeSheetRef.current = null;
@@ -1210,21 +1321,6 @@ const HomeShellContent = () => {
     restoreMapView();
   }, [setIsStopSheetOpen, setSelectedStopId, setSelectedStopName, setSelectedPlatformStopIds, setSelectedLines, clearMapFocus, restoreMapView]);
 
-  useEffect(() => {
-    if (!stationsData) return;
-    const matching = selectedLines.length > 0
-      ? stationsData.filter((station) => stationSupportsSelectedLines(station.routesServing, selectedLines))
-      : stationsData;
-    console.info(
-      "[stations] fetched",
-      stationsData.length,
-      "total |", matching.length,
-      "after line filters:",
-      selectedLines,
-      matching.slice(0, 5).map((s) => ({ name: s.name, routes: s.routesServing })),
-    );
-  }, [stationsData, selectedLines]);
-
   const tripTrackQuery = useQuery({
     queryKey: ["tripTrack", activeTripId],
     queryFn: () => fetchTripTrack(activeTripId!),
@@ -1235,12 +1331,19 @@ const HomeShellContent = () => {
     retryOnMount: false,
   });
 
-  const upcomingTripStops = activeTripId ? tripTrackQuery.data?.upcomingStops ?? [] : [];
-  const followFocusStopIds = upcomingTripStops.slice(0, 2).map((stop) => stop.stopId);
+  const upcomingTripStops = useMemo(() => {
+    if (!activeTripId) return [];
+    return tripTrackQuery.data?.upcomingStops ?? [];
+  }, [activeTripId, tripTrackQuery.data?.upcomingStops]);
+  const followFocusStopIds = useMemo(
+    () => upcomingTripStops.slice(0, 2).map((stop) => stop.stopId),
+    [upcomingTripStops],
+  );
   const followFocusStopSet = useMemo(() => {
     return followFocusStopIds.length > 0 ? new Set(followFocusStopIds) : null;
   }, [followFocusStopIds]);
   const vehiclePosition = tripTrackQuery.data?.vehicle?.position;
+  const activeTripRouteId = tripTrackQuery.data?.routeId;
 
   useEffect(() => {
     if (!activeTripId) return;
@@ -1362,15 +1465,13 @@ const HomeShellContent = () => {
         parameters: { depthTest: false },
       });
     });
-  }, [lineShapesQuery.data, selectedLines]);
+  }, [isStopSheetOpen, lineShapesQuery.data, selectedLines, selectedStopId]);
 
   const busRouteLayers = useMemo(() => {
-    console.log('[HomeShell] Creating bus route layers for:', busRouteShapes.length, 'routes');
     if (busRouteShapes.length === 0) return [];
     return busRouteShapes.map((route) => {
       const busYellow = "#F4C542";
       const color = hexToColor(route.color ?? busYellow);
-      console.log('[HomeShell] Creating layer for bus route', route.lineId, 'with', route.shapes.length, 'shapes');
       return new PathLayer({
         id: `bus-route-${route.lineId}`,
         data: route.shapes.map((path) => path.map((coord) => [coord.lng, coord.lat] as [number, number])),
@@ -1410,7 +1511,7 @@ const HomeShellContent = () => {
     if (!stationsData) return [];
     const busToken = getLineToken("Bus", themeMode);
     const limitToFollowStops = Boolean(activeTripId && followFocusStopSet && followFocusStopSet.size > 0);
-    const tripRouteTokenId = tripTrackQuery.data?.routeId ? getLineToken(tripTrackQuery.data!.routeId, themeMode).id : null;
+    const tripRouteTokenId = activeTripRouteId ? getLineToken(activeTripRouteId, themeMode).id : null;
     const effectiveSelectedLines = tripRouteTokenId
       ? Array.from(new Set<LineOptionId>([...selectedLines, tripRouteTokenId as LineOptionId]))
       : selectedLines;
@@ -1503,12 +1604,44 @@ const HomeShellContent = () => {
           isBusOnly,
         }));
     });
-  }, [activeTripId, followFocusStopSet, normalizedSearch, selectedLines, stationsData, selectedStopId, themeMode]);
+  }, [activeTripId, activeTripRouteId, followFocusStopSet, normalizedSearch, selectedLines, stationsData, selectedStopId, themeMode]);
 
-  const vehicleIsBus = routeLooksLikeBus(tripTrackQuery.data?.routeId);
+  useEffect(() => {
+    if (suggestedHubsFocusAppliedRef.current) return;
+    if (!mapReady) return;
+    if (!homeData) return;
+    if (activeTripId) return;
+    if (isStopSheetOpen) return;
+    if (homeData.nearby.length === 0) return;
+
+    const minDistance = homeData.nearby.reduce((best, stop) => Math.min(best, stop.distanceMeters), Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(minDistance) || minDistance <= 50_000) return;
+
+    const focusPoints: FocusPoint[] = homeData.nearby
+      .map((stop) => {
+        const station = stationLookup.get(stop.stopId);
+        if (!station) return null;
+        return { lat: station.latitude, lng: station.longitude };
+      })
+      .filter((point): point is FocusPoint => Boolean(point))
+      .slice(0, 6);
+
+    if (focusPoints.length === 0) return;
+
+    const distanceFromMap = metersBetween(viewState.latitude, viewState.longitude, focusPoints[0].lat, focusPoints[0].lng);
+    if (!Number.isFinite(distanceFromMap) || distanceFromMap <= 50_000) {
+      suggestedHubsFocusAppliedRef.current = true;
+      return;
+    }
+
+    requestMapFocus({ id: "suggested-hubs", points: focusPoints, scroll: false });
+    suggestedHubsFocusAppliedRef.current = true;
+  }, [activeTripId, homeData, isStopSheetOpen, mapReady, requestMapFocus, stationLookup, viewState.latitude, viewState.longitude]);
+
+  const vehicleIsBus = routeLooksLikeBus(activeTripRouteId);
   const vehicleLineToken = useMemo(
-    () => getLineToken(tripTrackQuery.data?.routeId, themeMode),
-    [tripTrackQuery.data?.routeId, themeMode],
+    () => getLineToken(activeTripRouteId, themeMode),
+    [activeTripRouteId, themeMode],
   );
   const vehicleMarkerAccent = vehicleLineToken.color;
   const vehicleMarkerGlow = vehicleLineToken.tint;
@@ -1651,32 +1784,87 @@ const HomeShellContent = () => {
     [],
   );
 
-  const handleUseDeviceLocation = useCallback(() => {
-    if (!navigator.geolocation) {
-      alert("Geolocation not supported");
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
+  const requestDeviceLocation = useCallback(
+    async ({ centerMap }: { centerMap?: boolean } = {}) => {
+      if (!navigator.geolocation) {
+        setDeviceLocationError("This browser doesn’t support device location.");
+        return;
+      }
+
+      setIsRequestingDeviceLocation(true);
+      setDeviceLocationError(null);
+
+      try {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10_000 });
+        });
         const { latitude, longitude } = pos.coords;
         applyLocation(latitude, longitude);
-        centerMapOnCoordinates(latitude, longitude);
-      },
-      () => {
-        alert("Unable to fetch your location");
-      },
-      { enableHighAccuracy: true, timeout: 10_000 },
-    );
-  }, [applyLocation, centerMapOnCoordinates]);
-  useEffect(() => {
-    handleUseDeviceLocation();
-  }, [handleUseDeviceLocation]);
+        if (centerMap) {
+          centerMapOnCoordinates(latitude, longitude);
+        }
+      } catch (error) {
+        const geoError = error as Partial<GeolocationPositionError>;
+        const code = geoError.code;
+        if (code === 1) {
+          setDeviceLocationError("Location access is blocked. Enable it in your browser settings, then try again.");
+          return;
+        }
+        if (code === 2) {
+          setDeviceLocationError("Couldn’t determine your location. Try again.");
+          return;
+        }
+        if (code === 3) {
+          setDeviceLocationError("Location request timed out. Try again.");
+          return;
+        }
+        setDeviceLocationError("Unable to fetch your location.");
+      } finally {
+        setIsRequestingDeviceLocation(false);
+      }
+    },
+    [applyLocation, centerMapOnCoordinates],
+  );
 
   useEffect(() => {
-    if (isDesktop) {
-      setIsNavDrawerOpen(false);
+    if (deviceLocationPref !== "on") return;
+    if (geoPermissionState !== "granted") return;
+    void requestDeviceLocation({ centerMap: false });
+  }, [deviceLocationPref, geoPermissionState, requestDeviceLocation]);
+
+  const openDeviceLocationModal = useCallback(() => {
+    setIsDeviceLocationModalOpen(true);
+  }, []);
+
+  useEffect(() => {
+    const openLocation = searchParams.get("openLocation");
+    if (!openLocation) return;
+
+    setIsDeviceLocationModalOpen(true);
+
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("openLocation");
+    const next = params.toString();
+    router.replace(next ? `/?${next}` : "/");
+  }, [router, searchParams]);
+
+  const handleUseDeviceLocation = useCallback(() => {
+    setDeviceLocationPref("on");
+    if (geoPermissionState === "granted") {
+      void requestDeviceLocation({ centerMap: true });
+      return;
     }
-  }, [isDesktop]);
+    openDeviceLocationModal();
+  }, [geoPermissionState, openDeviceLocationModal, requestDeviceLocation]);
+
+  useEffect(() => {
+    if (!isDeviceLocationModalOpen) return;
+    const onKeyDown = (evt: KeyboardEvent) => {
+      if (evt.key === "Escape") setIsDeviceLocationModalOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isDeviceLocationModalOpen]);
 
   const recenterMap = useCallback(() => {
     if (!mapReady || !mapRef.current) return;
@@ -2052,94 +2240,113 @@ const HomeShellContent = () => {
     }
   }, [activeTripId, tripTrackQuery.isError, tripTrackQuery.failureCount, stopFollowingTrip]);
 
-  return (
-    <div className="flex min-h-screen flex-col" style={{ background: "var(--background)", color: "var(--foreground)" }}>
-      <BuildInfoBadge />
-      <header className="sticky top-0 z-40 border-b bg-[color:var(--background)]/95 backdrop-blur" style={{ borderColor: "var(--border)" }}>
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-2 sm:px-6 sm:py-2.5">
-          <Link href="/" className="flex items-center gap-2 text-lg font-semibold tracking-wide" style={{ color: "var(--foreground)" }}>
-            <span className="text-[10px] uppercase tracking-[0.5em] text-[color:var(--muted)]">LineLight</span>
-            <span className="hidden sm:inline">Transit Radar</span>
-          </Link>
-          {isDesktop ? (
-            <nav className="hidden items-center gap-2 lg:flex" aria-label="Primary navigation">
-              {PRIMARY_NAV_LINKS.map((link) => (
-                <Link key={link.href} href={link.href} className={NAV_BUTTON_CLASS}>
-                  {link.icon}
-                  <span>{link.label}</span>
-                </Link>
-              ))}
-              <button type="button" onClick={toggleTheme} className={NAV_BUTTON_CLASS}>
-                {themeMode === "dark" ? <FiSun /> : <FiMoon />}
-                <span className="hidden sm:inline">{themeMode === "dark" ? "Light" : "Dark"}</span>
-              </button>
-            </nav>
-          ) : (
-            <div className="flex items-center gap-2 lg:hidden">
-              <button
-                type="button"
-                onClick={toggleTheme}
-                className="icon-button"
-                aria-label="Toggle theme"
-              >
-                {themeMode === "dark" ? <FiSun /> : <FiMoon />}
-              </button>
-              <button
-                type="button"
-                className="icon-button"
-                onClick={() => setIsNavDrawerOpen((prev) => !prev)}
-                aria-expanded={isNavDrawerOpen}
-                aria-controls="primary-nav-panel"
-                aria-label={isNavDrawerOpen ? "Close navigation" : "Open navigation"}
-              >
-                {isNavDrawerOpen ? <FiX /> : <FiMenu />}
-              </button>
-            </div>
-          )}
-        </div>
-        {!isDesktop && !preferStackedLayout && (
-        <div
-          id="primary-nav-panel"
-          className={`mx-auto w-full max-w-6xl px-4 transition-[max-height,opacity] duration-200 overflow-hidden sm:px-6 ${
-            isNavDrawerOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
-          }`}
-          style={{ maxHeight: isNavDrawerOpen ? "480px" : "0px" }}
-        >
-            <nav
-              className="rounded-2xl border bg-[color:var(--card)] p-4 shadow-xl"
-              style={{ borderColor: "var(--border)" }}
-              aria-label="Primary navigation drawer"
-            >
-              <div className="flex flex-col gap-2">
-                {PRIMARY_NAV_LINKS.map((link) => (
-                  <Link
-                    key={`drawer-${link.href}`}
-                    href={link.href}
-                    className="flex items-center gap-3 rounded-xl px-2 py-1.5 text-base font-semibold"
-                    style={{ color: "var(--foreground)" }}
-                    onClick={() => setIsNavDrawerOpen(false)}
-                  >
-                    {link.icon}
-                    <span>{link.label}</span>
-                  </Link>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => {
-                    toggleTheme();
-                    setIsNavDrawerOpen(false);
-                  }}
-                  className="flex items-center gap-3 rounded-xl px-2 py-1.5 text-base font-semibold"
-                  style={{ color: "var(--foreground)" }}
+	  return (
+	    <div className="flex min-h-screen flex-col" style={{ background: "var(--background)", color: "var(--foreground)" }}>
+	      {isDeviceLocationModalOpen && (
+	        <div
+	            className="fixed inset-0 z-60 flex items-center justify-center px-4 py-8"
+	          role="dialog"
+	          aria-modal="true"
+	          aria-label="Device location settings"
+	        >
+	          <button
+	            type="button"
+              className="absolute inset-0"
+              style={{ background: "rgba(0,0,0,0.6)" }}
+	            aria-label="Close location settings"
+	            onClick={() => setIsDeviceLocationModalOpen(false)}
+	          />
+	          <div
+              className="relative w-full max-w-md rounded-2xl border bg-(--card) p-5 shadow-2xl"
+	            style={{ borderColor: "var(--border)" }}
+	          >
+	            <div className="flex items-start justify-between gap-4">
+	              <div>
+	                <h2 className="text-base font-semibold">Device location</h2>
+	                <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
+	                  Turn this on to center the map and load nearby stops around you.
+	                </p>
+	              </div>
+	              <button
+	                type="button"
+	                className="icon-button focus-outline"
+	                onClick={() => setIsDeviceLocationModalOpen(false)}
+	                aria-label="Close"
+	              >
+	                <FiX />
+	              </button>
+	            </div>
+
+	            <div className="mt-4 flex items-center justify-between gap-4 rounded-xl border px-4 py-3" style={{ borderColor: "var(--border)" }}>
+	              <div className="min-w-0">
+	                <p className="text-sm font-semibold">Use my location</p>
+	                <p className="mt-0.5 text-xs" style={{ color: "var(--muted)" }}>
+	                  {geoPermissionState === "denied"
+	                    ? "Blocked in browser settings."
+	                    : geoPermissionState === "granted"
+	                      ? "Allowed."
+	                      : "Ask when you enable."}
+	                </p>
+	              </div>
+	              <button
+	                type="button"
+	                role="switch"
+	                aria-checked={deviceLocationPref === "on"}
+                  className={`relative h-7 w-12 shrink-0 rounded-full border transition ${
+                    deviceLocationPref === "on" ? "bg-emerald-500/80" : "bg-(--surface)"
+	                }`}
+	                style={{ borderColor: "var(--border)" }}
+	                onClick={() => {
+	                  const next = deviceLocationPref === "on" ? "off" : "on";
+	                  setDeviceLocationPref(next);
+	                  setDeviceLocationError(null);
+	                  if (next === "on") {
+	                    if (geoPermissionState === "denied") return;
+	                    void requestDeviceLocation({ centerMap: true });
+	                  }
+	                }}
+	              >
+	                <span
+	                  className={`absolute top-1/2 h-5 w-5 -translate-y-1/2 rounded-full bg-white shadow transition ${
+	                    deviceLocationPref === "on" ? "left-6" : "left-1"
+	                  }`}
+	                />
+	              </button>
+	            </div>
+
+	            {deviceLocationError && (
+                <div
+                  className="mt-3 rounded-xl border px-3 py-2 text-sm"
+                  style={{ borderColor: "color-mix(in srgb, var(--state-danger) 45%, var(--border))", color: "var(--state-danger)" }}
                 >
-                  {themeMode === "dark" ? <FiSun /> : <FiMoon />}
-                  <span>{themeMode === "dark" ? "Light mode" : "Dark mode"}</span>
-                </button>
-              </div>
-            </nav>
-          </div>
-        )}
-      </header>
+	                {deviceLocationError}
+	              </div>
+	            )}
+
+	            <div className="mt-4 flex items-center justify-end gap-2">
+	              <button
+	                type="button"
+	                className="btn btn-ghost focus-outline"
+	                onClick={() => setIsDeviceLocationModalOpen(false)}
+	              >
+	                Done
+	              </button>
+	              <button
+	                type="button"
+	                className="btn btn-primary focus-outline inline-flex items-center gap-2"
+	                disabled={geoPermissionState === "denied" || isRequestingDeviceLocation}
+	                onClick={() => {
+	                  setDeviceLocationPref("on");
+	                  void requestDeviceLocation({ centerMap: true });
+	                }}
+	              >
+	                <FiMapPin />
+	                {isRequestingDeviceLocation ? "Requesting…" : "Enable now"}
+	              </button>
+	            </div>
+	          </div>
+	        </div>
+	      )}
       <main
         className={`${layoutClass} relative overflow-hidden overflow-y-auto`}
         data-breakpoint={layoutBreakpoint}
@@ -2196,7 +2403,7 @@ const HomeShellContent = () => {
                 </div>
                 <div className="mt-3">
                   <div className="flex items-center">
-                    <FiSearch className="pointer-events-none mr-3 text-[color:var(--muted)]" />
+                    <FiSearch className="pointer-events-none mr-3 text-(--muted)" />
                     <input
                       value={stopSearch}
                       onChange={(evt) => setStopSearch(evt.target.value)}
@@ -2235,7 +2442,7 @@ const HomeShellContent = () => {
         <section className="flex min-w-0 flex-col space-y-5">
             <div
               ref={mapSectionRef}
-              className={`panel ${isFollowingTrip ? "!p-0" : ""}`}
+                className={`panel ${isFollowingTrip ? "p-0!" : ""}`}
               style={{ position: "relative", height: mapPanelHeight }}
             >
               {!isFollowingTrip && !preferStackedLayout && (
@@ -2250,17 +2457,26 @@ const HomeShellContent = () => {
                 <div className="mt-1 text-xs font-medium" style={{ color: "var(--muted)" }}>
                   Stops on map: <span style={{ color: "var(--foreground)" }}>{stationMarkers.length}</span>
                 </div>
-                {selectedStopId && selectedStopName && (
-                  <div
-                    className="mt-2 inline-flex items-center gap-2 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-3 py-1 text-xs text-white"
-                    aria-live="polite"
-                  >
-                    <span className="text-[10px] uppercase tracking-[0.3em] text-cyan-200">Viewing</span>
-                    <span className="font-semibold text-white">{selectedStopName}</span>
-                  </div>
-                )}
+                  {selectedStopId && selectedStopName && (
+                    <div
+                      className="mt-2 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs"
+                      aria-live="polite"
+                      style={{
+                        borderColor: "color-mix(in srgb, var(--state-info) 45%, var(--border))",
+                        background: "color-mix(in srgb, var(--state-info) 10%, var(--surface))",
+                        color: "var(--foreground)",
+                      }}
+                    >
+                      <span className="text-[10px] uppercase tracking-[0.3em]" style={{ color: "var(--state-info)" }}>
+                        Viewing
+                      </span>
+                      <span className="font-semibold" style={{ color: "var(--foreground)" }}>
+                        {selectedStopName}
+                      </span>
+                    </div>
+                  )}
               </div>
-              <div className="flex flex-col gap-2 text-xs text-slate-400 sm:flex-row sm:flex-wrap sm:items-center">
+                <div className="flex flex-col gap-2 text-xs sm:flex-row sm:flex-wrap sm:items-center" style={{ color: "var(--muted)" }}>
                 {selectedStopId && selectedStopName && (
                 <div className="mt-2 inline-flex items-center gap-2 chip chip-live" aria-live="polite">
                     <span className="text-[10px] uppercase tracking-[0.3em]">Viewing</span>
@@ -2268,7 +2484,7 @@ const HomeShellContent = () => {
                   </div>
                 )}
                 {activeTripId && tripTrackQuery.data && (
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-200">
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs" style={{ color: "var(--foreground)" }}>
                     <span className="chip chip-live">
                       <FiZap /> Following {tripTrackQuery.data.routeId} → {tripTrackQuery.data.destination}
                     </span>
@@ -2397,9 +2613,9 @@ const HomeShellContent = () => {
                   <label htmlFor="map-spotlight-search" className="text-xs font-semibold" style={{ color: "var(--muted)" }}>
                     Map input
                   </label>
-                  <button
+                    <button
                     type="button"
-                    className={`icon-button focus-outline ${showAdvancedCoords ? "bg-[color:var(--surface)]" : ""}`}
+                      className={`icon-button focus-outline ${showAdvancedCoords ? "bg-(--surface)" : ""}`}
                     onClick={() => {
                       setShowAdvancedCoords((prev) => !prev);
                       setManualCoordsError(null);
@@ -2412,7 +2628,7 @@ const HomeShellContent = () => {
                   </button>
                 </div>
                 <div className="flex items-center">
-                  <FiSearch className="pointer-events-none mr-3 text-[color:var(--muted)]" />
+                    <FiSearch className="pointer-events-none mr-3 text-(--muted)" />
                   <input
                     id="map-spotlight-search"
                     value={mapSearchQuery}
@@ -2449,9 +2665,9 @@ const HomeShellContent = () => {
                   <div className="mt-2 rounded-2xl border" style={{ borderColor: "var(--border)", background: "var(--card)" }}>
                     {mapSearchResults.map((result) => (
                       <div key={result.id} className="flex items-center gap-2 border-b px-3 py-2 text-left text-xs last:border-b-0" style={{ borderColor: "var(--border)" }}>
-                        <button
+                          <button
                           type="button"
-                          className="flex-1 text-left text-sm hover:text-[color:var(--accent)]"
+                            className="flex-1 text-left text-sm hover:text-(--accent)"
                           onClick={() => handleMapSearchSelect(result)}
                         >
                           {result.label}
@@ -2544,7 +2760,7 @@ const HomeShellContent = () => {
                         type="checkbox"
                         checked={newLocationIncludeLines}
                         onChange={(evt) => setNewLocationIncludeLines(evt.target.checked)}
-                        className="rounded border-[color:var(--border)]"
+                          className="rounded border-(--border)"
                       />
                       Save current line filters
                     </label>
@@ -2701,7 +2917,7 @@ const HomeShellContent = () => {
                         // Prefer webgl2 if available, fall back to webgl
                         const gl = (canvas.getContext && (canvas.getContext("webgl2") || canvas.getContext("webgl"))) || null;
                         return Boolean(gl);
-                      } catch (err) {
+                      } catch {
                         return false;
                       }
                     })();
@@ -2845,17 +3061,35 @@ const HomeShellContent = () => {
                   {selectedStopAnnotation}
                 </MapGL>
                 {lineShapesQuery.isLoading && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/20 text-sm text-slate-300">
+                  <div
+                    className="absolute inset-0 flex items-center justify-center text-sm"
+                    style={{
+                      background: "color-mix(in srgb, var(--background) 55%, transparent)",
+                      color: "var(--foreground)",
+                    }}
+                  >
                     Loading line paths…
                   </div>
                 )}
                 {lineShapesQuery.isError && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/40 text-sm text-rose-400">
+                  <div
+                    className="absolute inset-0 flex items-center justify-center text-sm"
+                    style={{
+                      background: "color-mix(in srgb, var(--background) 65%, transparent)",
+                      color: "var(--state-danger)",
+                    }}
+                  >
                     Unable to load line shapes. Try again shortly.
                   </div>
                 )}
                 {!lineShapesQuery.isLoading && (!lineShapesQuery.data || lineShapesQuery.data.length === 0) && !lineShapesQuery.isError && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/30 text-sm text-slate-300">
+                  <div
+                    className="absolute inset-0 flex items-center justify-center text-sm"
+                    style={{
+                      background: "color-mix(in srgb, var(--background) 60%, transparent)",
+                      color: "var(--muted)",
+                    }}
+                  >
                     Line shapes unavailable.
                   </div>
                 )}
@@ -2867,13 +3101,13 @@ const HomeShellContent = () => {
       </main>
       {selectedStopId && isStopSheetOpen && (
         <>
-      <div
+	      <div
         ref={stopSheetBackdropRef}
         className="fixed inset-x-0 bottom-0 z-30 pointer-events-none"
         aria-hidden="true"
         style={{ height: preferStackedLayout ? mobileSheetHeight : "100%" }}
       >
-        <div className="absolute inset-0 bg-black/70" />
+	        <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.7)" }} />
       </div>
           <StopSheetPanel
             stopId={selectedStopId}
@@ -2893,11 +3127,11 @@ const HomeShellContent = () => {
       {activeTripId && (
         <div
           ref={followPanelRef}
-          className="fixed inset-x-0 bottom-0 z-[80] flex justify-center px-4 pb-6 pointer-events-none"
+            className="fixed inset-x-0 bottom-0 z-80 flex justify-center px-4 pb-6 pointer-events-none"
           aria-live="polite"
         >
           <div
-            className={`pointer-events-auto panel mx-auto w-full max-w-6xl space-y-4 rounded-[32px] border bg-opacity-90 transition duration-400 ${tripTrackQuery.isLoading ? "translate-y-10 opacity-0" : "translate-y-0 opacity-100"}`}
+            className={`pointer-events-auto panel mx-auto w-full max-w-6xl space-y-4 rounded-4xl border bg-opacity-90 transition duration-400 ${tripTrackQuery.isLoading ? "translate-y-10 opacity-0" : "translate-y-0 opacity-100"}`}
             style={{
               borderColor: followPanelTokens.border,
               background: followPanelTokens.background,

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/no-require-imports */
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
@@ -33,11 +34,11 @@ function main() {
           latestMtime = mtime;
           latestFile = file;
         }
-      } catch (e) {
+      } catch {
         // skip unreadable files
       }
     });
-  } catch (e) {
+  } catch {
     // fallback: ignore
   }
 

@@ -156,4 +156,22 @@ export const fetchLineShapes = (lineId: string): Promise<LineShapeResponse> =>
 export const fetchRouteShapes = (routeId: string): Promise<LineShapeResponse> =>
   fetch(buildUrl(`/api/routes/${routeId}/shapes`)).then((res) => res.json());
 
+export interface StopLookupEntry {
+  stopId: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+}
+
+export const fetchStopLookup = async (stopIds: string[]): Promise<StopLookupEntry[]> => {
+  const unique = Array.from(new Set(stopIds.map((id) => id.trim()).filter(Boolean)));
+  if (unique.length === 0) return [];
+  const response = await fetch(buildUrl(`/api/stops/lookup?ids=${encodeURIComponent(unique.join(","))}`), { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Stop lookup request failed: ${response.status}`);
+  }
+  const payload = (await response.json()) as { ready: boolean; stops: StopLookupEntry[] };
+  return payload.stops ?? [];
+};
+
 export type { HomeResponse, GetStationBoardResponse, TripTrackResponse, LineSummary, LineOverview, SystemInsights, LineShapeResponse };

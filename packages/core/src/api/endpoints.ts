@@ -7,6 +7,9 @@ import type {
   LineSummary,
   LineShapeResponse,
   SystemInsights,
+  LinesResponse,
+  LineOverviewResponse,
+  SystemInsightsResponse,
 } from "../models/lines";
 import type { LatLng } from "../models/common";
 
@@ -78,7 +81,8 @@ export const fetchLines = async (
 ): Promise<LineSummary[]> => {
   const url = buildUrl(baseUrl, "/api/lines");
   const response = await fetch(url, { ...init });
-  return handleJson<LineSummary[]>(response);
+  const payload = await handleJson<LinesResponse>(response);
+  return payload.lines;
 };
 
 export const fetchLineOverview = async (
@@ -88,7 +92,8 @@ export const fetchLineOverview = async (
 ): Promise<LineOverview> => {
   const url = buildUrl(baseUrl, `/api/lines/${lineId}/overview`);
   const response = await fetch(url, { ...init });
-  return handleJson<LineOverview>(response);
+  const payload = await handleJson<LineOverviewResponse>(response);
+  return payload.line;
 };
 
 export const fetchSystemInsights = async (
@@ -97,7 +102,8 @@ export const fetchSystemInsights = async (
 ): Promise<SystemInsights> => {
   const url = buildUrl(baseUrl, "/api/system/insights");
   const response = await fetch(url, { ...init });
-  return handleJson<SystemInsights>(response);
+  const payload = await handleJson<SystemInsightsResponse>(response);
+  return payload.insights;
 };
 
 export const fetchLineShapes = async (

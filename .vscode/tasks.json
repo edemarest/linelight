@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "web: build",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"--workspace",
+				"web",
+				"run",
+				"build"
+			],
+			"isBackground": false
+		}
+	]
+}

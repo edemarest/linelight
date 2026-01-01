@@ -34,6 +34,16 @@ const HOME_CACHE_COORD_PRECISION = 0.01; // ~1.1km
 const HOME_CACHE_RADIUS_INCREMENT = 250;
 const MAX_UNIQUE_STOP_TARGETS = 32;
 const STOP_SNAPSHOT_CONCURRENCY = 4;
+const SUGGESTED_STATION_IDS = [
+  "place-pktrm", // Park Street
+  "place-gover", // Government Center
+  "place-dwnxg", // Downtown Crossing
+  "place-sstat", // South Station
+  "place-north", // North Station
+  "place-haecl", // Haymarket
+  "place-coecl", // Copley
+  "place-knncl", // Kendall/MIT
+] as const;
 
 const quantizeCoordinate = (value: number) =>
   (Math.round(value / HOME_CACHE_COORD_PRECISION) * HOME_CACHE_COORD_PRECISION).toFixed(4);
@@ -300,6 +310,69 @@ const collectStopsWithinRadius = (
   return entries.sort((a, b) => a.distance - b.distance).slice(0, limit);
 };
 
+const scoreGroupByRoutes = (group: StationGroup, stopRouteMap?: Map<string, Set<string>>): number => {
+  if (!stopRouteMap) return 0;
+  const routes = new Set<string>();
+  const stationRoutes = stopRouteMap.get(group.stationStop.id);
+  if (stationRoutes) {
+    stationRoutes.forEach((routeId) => routes.add(routeId));
+  }
+  group.platformStopIds.forEach((stopId) => {
+    const routeIds = stopRouteMap.get(stopId);
+    if (!routeIds) return;
+    routeIds.forEach((routeId) => routes.add(routeId));
+  });
+  return routes.size;
+};
+
+const buildSuggestedNearbyGroups = (
+  allStops: MbtaStop[],
+  options: Pick<BuildHomeOptions, "lat" | "lng" | "limit">,
+  stopLookup: Map<string, MbtaStop>,
+  stationChildrenMap: Map<string, MbtaStop[]>,
+  stopRouteMap?: Map<string, Set<string>>,
+): StationGroup[] => {
+  const preferredStops = SUGGESTED_STATION_IDS.map((id) => stopLookup.get(id)).filter((stop): stop is MbtaStop => Boolean(stop));
+  const placeStops = allStops.filter((stop) => stop.id.startsWith("place-") && isBoardableStop(stop));
+
+  const uniqueCandidates = new Map<string, MbtaStop>();
+  preferredStops.forEach((stop) => uniqueCandidates.set(stop.id, stop));
+  placeStops.forEach((stop) => uniqueCandidates.set(stop.id, stop));
+
+  const entries = Array.from(uniqueCandidates.values()).map((stop) => ({
+    stop,
+    distance: haversineDistanceMeters(options.lat, options.lng, stop.attributes.latitude, stop.attributes.longitude),
+  }));
+
+  const groupsMap = buildGroupsFromEntries(entries, stopLookup, stationChildrenMap);
+  const selected: StationGroup[] = [];
+  const seen = new Set<string>();
+
+  const addGroup = (group: StationGroup | undefined, options?: { allowUnscored?: boolean }) => {
+    if (!group) return;
+    const key = group.stationStop.id;
+    if (seen.has(key)) return;
+    if (!options?.allowUnscored && scoreGroupByRoutes(group, stopRouteMap) === 0) return;
+    selected.push(group);
+    seen.add(key);
+  };
+
+  SUGGESTED_STATION_IDS.forEach((id) => addGroup(groupsMap.get(id), { allowUnscored: true }));
+
+  if (!stopRouteMap) {
+    return selected.slice(0, options.limit);
+  }
+
+  const scored = Array.from(groupsMap.values())
+    .map((group) => ({ group, score: scoreGroupByRoutes(group, stopRouteMap) }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score || a.group.minDistance - b.group.minDistance);
+
+  scored.forEach(({ group }) => addGroup(group));
+
+  return selected.slice(0, options.limit);
+};
+
 type StopSnapshotFetcher = typeof getStopEtaSnapshot;
 
 const fetchStopSnapshots = async (
@@ -382,7 +455,16 @@ export const buildHomeSnapshot = async (
   const orderedNearbyGroups = Array.from(nearbyGroupsMap.values()).sort(
     (a, b) => a.minDistance - b.minDistance,
   );
-  const limitedNearbyGroups = orderedNearbyGroups.slice(0, options.limit);
+  let limitedNearbyGroups = orderedNearbyGroups.slice(0, options.limit);
+  if (limitedNearbyGroups.length === 0) {
+    limitedNearbyGroups = buildSuggestedNearbyGroups(
+      allStops,
+      options,
+      stopLookup,
+      stationChildrenMap,
+      cache.getStopRouteMap()?.data,
+    );
+  }
 
   const favoriteStops = options.favoriteStopIds
     .map((id) => stopLookup.get(id))
