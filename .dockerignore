@@ -1,10 +1,28 @@
 .git
 node_modules
+**/node_modules
+.next
+**/.next
 *.log
 dist
+**/dist
 .env
 .env.local
 .DS_Store
 coverage
 tmp
 temp
+
+# Large non-build artifacts
+cleanup-backup-*/
+docs/
+samples/
+backend/diagnostics/
+mbta-rapid-stops.csv
+mbta-stops.json
+stop-locations.json
+stop-locations.tsv
+
+# Extremely large asset set (nearly 1GB). If you need these in production,
+# consider hosting via CDN/object storage and fetching at runtime.
+web/public/landmarks/

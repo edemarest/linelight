@@ -2,10 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  experimental: {
-    turbo: {
-      root: "/app",
-    },
+  transpilePackages: ["@linelight/core"],
+  turbopack: {
+    root: "/app",
   },
 };
 
