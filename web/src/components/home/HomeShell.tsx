@@ -1209,6 +1209,7 @@ const HomeShellContent = () => {
   const [mapStyleId, setMapStyleId] = useState<(typeof MAP_STYLE_OPTIONS)[number]["id"]>("dark");
   const [isClient, setIsClient] = useState(false);
   const mapSectionRef = useRef<HTMLDivElement | null>(null);
+  const detailsPanelRef = useRef<HTMLDivElement | null>(null);
   const followPanelRef = useRef<HTMLDivElement | null>(null);
   const tripTimelineRef = useRef<HTMLDivElement | null>(null);
   const [viewState, setViewState] = useState<ViewState>(() => ({
@@ -3604,6 +3605,22 @@ const HomeShellContent = () => {
     return [STATION_MARKER_LAYER_ID, STATION_MARKER_SELECTED_LAYER_ID, STATION_MARKER_HOVER_LAYER_ID];
   }, [mapVisibility.showStationMarkers]);
   const showTripLabels = Boolean(activeTripPlan && tripMode !== "HOME" && !isFollowingTrip && viewState.zoom >= TRIP_LABEL_MIN_ZOOM);
+  const dismissKeyboard = useCallback(() => {
+    if (typeof document === "undefined") return;
+    const active = document.activeElement as HTMLElement | null;
+    active?.blur?.();
+  }, []);
+  const handleMobileInputFocus = useCallback((target?: HTMLElement | null) => {
+    if (!preferStackedLayout || !isMobile) return;
+    setMobileFocusMode("details");
+    requestAnimationFrame(() => {
+      if (target?.scrollIntoView) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      detailsPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [isMobile, preferStackedLayout]);
 
   useEffect(() => {
     if (!mapReady) return;
@@ -5180,13 +5197,24 @@ const HomeShellContent = () => {
                   <input
                     value={stopSearch}
                     onChange={(evt) => setStopSearch(evt.target.value)}
-                    onFocus={() => {
+                    onFocus={(evt) => {
                       setShowFiltersPanel(true);
+                      handleMobileInputFocus(evt.currentTarget);
                     }}
                     placeholder="Search all stops (Park Street, Red…)"
                     className="search-input input-prominent flex-1 pr-4 focus-outline"
                     aria-label="Search all stops"
                   />
+                  {preferStackedLayout && isMobile && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost px-2 py-1 text-[11px]"
+                      data-interactive="ghost"
+                      onClick={dismissKeyboard}
+                    >
+                      Done
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
@@ -5202,13 +5230,24 @@ const HomeShellContent = () => {
                     <input
                       value={stopSearch}
                       onChange={(evt) => setStopSearch(evt.target.value)}
-                      onFocus={() => {
+                      onFocus={(evt) => {
                         setShowFiltersPanel(true);
+                        handleMobileInputFocus(evt.currentTarget);
                       }}
                       placeholder="Search all stops (Park Street, Red…)"
                       className="search-input input-prominent flex-1 pr-4 focus-outline"
                       aria-label="Search all stops"
                     />
+                    {preferStackedLayout && isMobile && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost px-2 py-1 text-[11px]"
+                        data-interactive="ghost"
+                        onClick={dismissKeyboard}
+                      >
+                        Done
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -5271,7 +5310,10 @@ const HomeShellContent = () => {
             <input
               ref={originInputRef}
               value={tripOriginInput}
-              onFocus={() => setTripFocusedField("origin")}
+              onFocus={(evt) => {
+                setTripFocusedField("origin");
+                handleMobileInputFocus(evt.currentTarget);
+              }}
               onChange={(evt) => {
                 originWasManualRef.current = true;
                 setTripOriginInput(evt.target.value);
@@ -5294,9 +5336,22 @@ const HomeShellContent = () => {
               disabled={isTripPlanning}
               className="search-input input-prominent flex-1 text-sm text-(--text) placeholder:text-(--muted) focus:outline-none focus-outline"
             />
+            {preferStackedLayout && isMobile && (
               <button
                 type="button"
-                className="map-select-button shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition"
+                className="btn btn-ghost px-2 py-1 text-[11px]"
+                data-interactive="ghost"
+                onClick={() => {
+                  dismissKeyboard();
+                  setTripFocusedField(null);
+                }}
+              >
+                Done
+              </button>
+            )}
+            <button
+              type="button"
+              className="map-select-button shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition"
                 style={{
                   borderColor: mapPickMode === "origin" ? "rgba(56, 189, 248, 0.7)" : "var(--border)",
                   color: mapPickMode === "origin" ? "var(--foreground)" : "var(--muted)",
@@ -5312,10 +5367,10 @@ const HomeShellContent = () => {
                   setMapPickMode("origin");
                   setMapPickError(null);
                 }}
-                aria-label="Set start on map"
-                title={mapPickMode === "origin" ? "Confirm start from map" : "Set start on map"}
-                disabled={isTripPlanning}
-              >
+              aria-label="Set start on map"
+              title={mapPickMode === "origin" ? "Confirm start from map" : "Set start on map"}
+              disabled={isTripPlanning}
+            >
               <FiMap />
             </button>
             {originDropdown.render && (
@@ -5323,7 +5378,12 @@ const HomeShellContent = () => {
                 className={`search-dropdown absolute left-0 top-full z-[90] w-full rounded-xl border bg-(--card) p-2 shadow-lg ${
                   originDropdown.visible ? "search-dropdown--open" : ""
                 }`}
-                style={{ borderColor: "var(--border)" }}
+                style={{
+                  borderColor: "var(--border)",
+                  maxHeight: preferStackedLayout && isMobile ? "40vh" : undefined,
+                  overflowY: preferStackedLayout && isMobile ? "auto" : undefined,
+                  overscrollBehavior: preferStackedLayout && isMobile ? "contain" : undefined,
+                }}
               >
                 {savedLocationsToShow.length > 0 && tripOriginInput.trim().length === 0 && (
                   <div className="mb-2">
@@ -5423,7 +5483,10 @@ const HomeShellContent = () => {
             <input
               ref={destinationInputRef}
               value={tripDestinationInput}
-              onFocus={() => setTripFocusedField("destination")}
+              onFocus={(evt) => {
+                setTripFocusedField("destination");
+                handleMobileInputFocus(evt.currentTarget);
+              }}
               onChange={(evt) => {
                 setTripDestinationInput(evt.target.value);
                 const nextOrigin = tripPlanView.origin ?? null;
@@ -5445,6 +5508,19 @@ const HomeShellContent = () => {
               disabled={isTripPlanning}
               className="search-input input-prominent flex-1 text-sm text-(--text) placeholder:text-(--muted) focus:outline-none focus-outline"
             />
+            {preferStackedLayout && isMobile && (
+              <button
+                type="button"
+                className="btn btn-ghost px-2 py-1 text-[11px]"
+                data-interactive="ghost"
+                onClick={() => {
+                  dismissKeyboard();
+                  setTripFocusedField(null);
+                }}
+              >
+                Done
+              </button>
+            )}
             <button
               type="button"
               className="map-select-button shrink-0 rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition"
@@ -5474,7 +5550,12 @@ const HomeShellContent = () => {
                 className={`search-dropdown absolute left-0 top-full z-[90] w-full rounded-xl border bg-(--card) p-2 shadow-lg ${
                   destinationDropdown.visible ? "search-dropdown--open" : ""
                 }`}
-                style={{ borderColor: "var(--border)" }}
+                style={{
+                  borderColor: "var(--border)",
+                  maxHeight: preferStackedLayout && isMobile ? "40vh" : undefined,
+                  overflowY: preferStackedLayout && isMobile ? "auto" : undefined,
+                  overscrollBehavior: preferStackedLayout && isMobile ? "contain" : undefined,
+                }}
               >
                 {savedLocationsToShow.length > 0 && tripDestinationInput.trim().length === 0 && (
                   <div className="mb-2">
@@ -6530,6 +6611,7 @@ const HomeShellContent = () => {
         </div>
         {!isFollowingTrip && preferStackedLayout && (
           <div
+            ref={detailsPanelRef}
             className="relative z-30 mt-4 flex w-full flex-col gap-4"
             style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 1.5rem)" }}
           >
