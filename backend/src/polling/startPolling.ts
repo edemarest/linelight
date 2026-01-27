@@ -1,3 +1,4 @@
+// Background polling jobs that hydrate caches for fast API responses.
 import { createMbtaClient } from "../mbta/client";
 import type { MbtaClient } from "../mbta/client";
 import type { MbtaCache } from "../cache/mbtaCache";
@@ -10,8 +11,10 @@ import type { MbtaPrediction, MbtaStop, MbtaTrip, MbtaVehicle } from "../models/
 import { resolveBoardableParent } from "../utils/stationKind";
 import { logger } from "../utils/logger";
 import { buildHomeSnapshot } from "../services/homeSnapshot";
+import { ensureArray, chunkArray } from "../utils/collections";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const SKIP_SHAPES_POLLING = process.env.SKIP_SHAPES_POLLING === "true";
 const TARGET_ROUTE_TYPES = [0, 1, 2, 3]; // light rail, heavy rail, commuter rail, bus (inc. Silver Line)
 const ROUTE_TYPE_FILTER = TARGET_ROUTE_TYPES.join(",");
 const FALLBACK_ROUTE_IDS = [
@@ -68,20 +71,6 @@ interface PollingJob {
   timer?: NodeJS.Timeout;
 }
 
-const ensureArray = <T>(value: T | T[] | undefined | null): T[] => {
-  if (!value) return [];
-  return Array.isArray(value) ? value : [value];
-};
-
-const chunkArray = <T>(values: T[], size: number): T[][] => {
-  if (values.length === 0) return [];
-  const chunks: T[][] = [];
-  for (let i = 0; i < values.length; i += size) {
-    chunks.push(values.slice(i, i + size));
-  }
-  return chunks;
-};
-
 const fetchStopsByIds = async (client: MbtaClient, ids: string[]): Promise<MbtaStop[]> => {
   if (ids.length === 0) return [];
   const parents: MbtaStop[] = [];
@@ -108,7 +97,8 @@ const decodePolyline = (encoded: string | null | undefined): Coordinate[] => {
 let selectedRouteIds: string[] = FALLBACK_ROUTE_IDS;
 const getTargetRouteIds = () => (selectedRouteIds.length > 0 ? selectedRouteIds : FALLBACK_ROUTE_IDS);
 
-const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
+const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => {
+  const jobs: PollingJob[] = [
   {
     name: "routes",
     intervalMs: 1000 * 60 * 60,
@@ -285,32 +275,36 @@ const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
       cache.setTrips(trips);
     },
   },
-  {
-    name: "shapes",
-    intervalMs: 1000 * 60 * 60 * 6,
-    initialDelayMs: 14000,
-    run: async () => {
-      const routeChunks = chunkArray(getTargetRouteIds(), 5);
-      const routeShapeMap: RouteShapeMap = new Map();
-      for (const chunk of routeChunks) {
-        const response = await client.getShapes({
-          "filter[route]": chunk.join(","),
-          "page[limit]": 2000,
-        });
-        ensureArray(response.data).forEach((shape) => {
-          const routeId = extractFirstRelationshipId(shape.relationships?.route);
-          if (!routeId) return;
-          const coords = decodePolyline(shape.attributes.polyline);
-          if (coords.length < 2) return;
-          const existing = routeShapeMap.get(routeId) ?? [];
-          existing.push(coords);
-          routeShapeMap.set(routeId, existing);
-        });
-        await sleep(120);
-      }
-      cache.setShapes(routeShapeMap);
-    },
-  },
+  ...(SKIP_SHAPES_POLLING
+    ? []
+    : [
+        {
+          name: "shapes",
+          intervalMs: 1000 * 60 * 60 * 6,
+          initialDelayMs: 14000,
+          run: async () => {
+            const routeChunks = chunkArray(getTargetRouteIds(), 5);
+            const routeShapeMap: RouteShapeMap = new Map();
+            for (const chunk of routeChunks) {
+              const response = await client.getShapes({
+                "filter[route]": chunk.join(","),
+                "page[limit]": 2000,
+              });
+              ensureArray(response.data).forEach((shape) => {
+                const routeId = extractFirstRelationshipId(shape.relationships?.route);
+                if (!routeId) return;
+                const coords = decodePolyline(shape.attributes.polyline);
+                if (coords.length < 2) return;
+                const existing = routeShapeMap.get(routeId) ?? [];
+                existing.push(coords);
+                routeShapeMap.set(routeId, existing);
+              });
+              await sleep(120);
+            }
+            cache.setShapes(routeShapeMap);
+          },
+        },
+      ]),
   {
     name: "home-hotspots",
     intervalMs: 1000 * 45,
@@ -335,7 +329,10 @@ const createJobs = (client: MbtaClient, cache: MbtaCache): PollingJob[] => [
       }
     },
   },
-];
+  ];
+
+  return jobs;
+};
 
 const startJob = (job: PollingJob) => {
   const scheduleNext = (delayMs: number) => {
@@ -344,7 +341,7 @@ const startJob = (job: PollingJob) => {
       try {
         await job.run();
         const duration = Date.now() - start;
-        logger.info("Polling job completed", { job: job.name, durationMs: duration });
+        logger.debug("Polling job completed", { job: job.name, durationMs: duration });
       } catch (error) {
         logger.error("Polling job failed", { job: job.name, message: String(error) });
       } finally {
@@ -368,6 +365,10 @@ export const initializePolling = (): PollingBundle => {
   const redis = createRedisManager();
   const cache = createMbtaCache(redis);
   const jobs = createJobs(client, cache);
+
+  if (SKIP_SHAPES_POLLING) {
+    logger.warn("SKIP_SHAPES_POLLING enabled; skipping route shapes polling.");
+  }
 
   jobs.forEach(startJob);
 

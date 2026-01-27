@@ -1,24 +1,15 @@
+// Trip tracking payload builder: current vehicle position + upcoming stops.
 import type { MbtaClient } from "../mbta/client";
 import type { MbtaCache } from "../cache/mbtaCache";
 import type { TripTrackResponse, TripUpcomingStop, TripVehicle, LatLng } from "@linelight/core";
 import type { MbtaPrediction, MbtaStop, MbtaVehicle } from "../models/mbta";
 import { extractFirstRelationshipId } from "../utils/jsonApi";
-
-const ensureArray = <T>(value: T | T[] | undefined | null): T[] => {
-  if (!value) return [];
-  return Array.isArray(value) ? value : [value];
-};
+import { ensureArray } from "../utils/collections";
+import { computeEtaMinutes } from "../utils/time";
 
 const toLatLng = (vehicle: MbtaVehicle): LatLng | undefined => {
   if (vehicle.attributes.latitude == null || vehicle.attributes.longitude == null) return undefined;
   return { lat: vehicle.attributes.latitude, lng: vehicle.attributes.longitude };
-};
-
-const computeEtaMinutes = (timestamp: string | null): number | null => {
-  if (!timestamp) return null;
-  const target = Date.parse(timestamp);
-  if (!Number.isFinite(target)) return null;
-  return Math.max(0, Math.round((target - Date.now()) / 60000));
 };
 
 const mapUpcomingStops = (
@@ -68,10 +59,20 @@ export const buildTripTrack = async (
   const primaryPrediction = predictions[0]!;
   const routeId = extractFirstRelationshipId(primaryPrediction.relationships?.route);
 
+  const fallbackVehicleId = predictions
+    .map((prediction) => extractFirstRelationshipId(prediction.relationships?.vehicle))
+    .find((id): id is string => Boolean(id));
+
   const vehicleResponse = await client.getVehicles({
     "filter[trip]": tripId,
   });
-  const vehicle = ensureArray(vehicleResponse.data)[0];
+  let vehicle = ensureArray(vehicleResponse.data)[0];
+  if (!vehicle && fallbackVehicleId) {
+    const fallbackResponse = await client.getVehicles({
+      "filter[id]": fallbackVehicleId,
+    });
+    vehicle = ensureArray(fallbackResponse.data)[0];
+  }
 
   let vehiclePayload: TripVehicle | undefined;
   if (vehicle) {

@@ -16,16 +16,41 @@ node_modules/
 /web/.next/
 /web/out/
 /web/.turbo/
+*.tsbuildinfo
+
+# Large static assets managed externally
+/web/public/landmarks/
 
 # Env files
 *.env
 *.env.local
 /backend/.env
 /web/.env*
+/deploy/aws/config.env
+/backend .env (copy to there)
+/web  copy.env (copy to there)
 
 # Editor junk
 .DS_Store
 *.swp
 
+# Python
+.venv/
+
 # Sample data and scratch outputs
 /samples/
+/backend/diagnostics/
+
+# Local data exports (keep repo clean; add intentionally if needed)
+/data/*.csv
+/data/*.json
+/data/*.tsv
+
+# Local capture/tracing artifacts
+/web/capture*.json
+/web/capture*.png
+/web/capture*.zip
+/web/capture*.har
+
+# Generated web build metadata
+/web/public/build-info.json

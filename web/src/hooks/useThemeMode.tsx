@@ -13,17 +13,6 @@ interface ThemeContextValue {
 
 const ThemeModeContext = createContext<ThemeContextValue | null>(null);
 
-const readInitialMode = (): ThemeMode => {
-  if (typeof window === "undefined") {
-    return "light";
-  }
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-  if (stored === "light" || stored === "dark") {
-    return stored;
-  }
-  return "light";
-};
-
 const applyThemeToDocument = (mode: ThemeMode) => {
   if (typeof document === "undefined") return;
   document.documentElement.dataset.theme = mode;
@@ -31,14 +20,19 @@ const applyThemeToDocument = (mode: ThemeMode) => {
 
 export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
   const [mode, setMode] = useState<ThemeMode>(() => {
-    const initial = readInitialMode();
-    applyThemeToDocument(initial);
-    return initial;
+    if (typeof window === "undefined") return "light";
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored === "light" || stored === "dark") {
+      return stored;
+    }
+    return "light";
   });
 
   useEffect(() => {
     applyThemeToDocument(mode);
-    window.localStorage.setItem(STORAGE_KEY, mode);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(STORAGE_KEY, mode);
+    }
   }, [mode]);
 
   const value = useMemo<ThemeContextValue>(() => ({ mode, setMode }), [mode]);
@@ -51,6 +45,12 @@ export const useThemeMode = () => {
   
   const toggleTheme = useCallback(() => {
     if (ctx) {
+      if (typeof document !== "undefined") {
+        document.documentElement.classList.add("theme-transition");
+        window.setTimeout(() => {
+          document.documentElement.classList.remove("theme-transition");
+        }, 350);
+      }
       ctx.setMode(ctx.mode === "light" ? "dark" : "light");
     }
   }, [ctx]);

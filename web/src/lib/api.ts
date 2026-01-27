@@ -1,3 +1,4 @@
+// Frontend API wrapper that targets the configured backend base URL.
 import { envConfig } from "@/lib/config";
 import type { ModeFilter } from "@/lib/modes";
 import {
@@ -15,6 +16,9 @@ import {
   type LineOverview,
   type SystemInsights,
   type LineShapeResponse,
+  type TripPlannerRequest,
+  type TripPlannerResponse,
+  validateTripPlannerResponse,
 } from "@linelight/core";
 
 const API_BASE_URL = envConfig.apiBaseUrl;
@@ -136,7 +140,7 @@ export const fetchHome = (params: {
 
 export const fetchStationBoard = (
   stopId: string,
-  params?: { lat?: number; lng?: number },
+  params?: { lat?: number; lng?: number; includeAlerts?: boolean; includeFacilities?: boolean },
 ): Promise<GetStationBoardResponse> => coreFetchStationBoard(API_BASE_URL, stopId, params);
 
 export const fetchTripTrack = (tripId: string): Promise<TripTrackResponse> =>
@@ -153,8 +157,93 @@ export const fetchSystemInsights = (): Promise<SystemInsights> =>
 export const fetchLineShapes = (lineId: string): Promise<LineShapeResponse> =>
   coreFetchLineShapes(API_BASE_URL, lineId);
 
-export const fetchRouteShapes = (routeId: string): Promise<LineShapeResponse> =>
-  fetch(buildUrl(`/api/routes/${routeId}/shapes`)).then((res) => res.json());
+export interface DonationBoardEntry {
+  name: string;
+  amount: number;
+  amountCents: number;
+  currency: string;
+  createdAt: string;
+}
+
+export interface DonationBoardResponse {
+  top: DonationBoardEntry[];
+  recent: DonationBoardEntry[];
+  summary?: {
+    supporterCount: number;
+    totalAmountCents: number;
+  };
+  updatedAt: string;
+}
+
+export const fetchDonationBoard = async (limit = 18): Promise<DonationBoardResponse> => {
+  const response = await fetch(buildUrl(`/api/donations/board?limit=${limit}`), { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Donation board request failed: ${response.status}`);
+  }
+  return (await response.json()) as DonationBoardResponse;
+};
+
+export const fetchTripPlanner = async (
+  params: TripPlannerRequest,
+  init?: RequestInit,
+): Promise<TripPlannerResponse> => {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutMs = Number(envConfig.tripPlannerTimeoutMs ?? 12_000);
+  const timeoutId = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  if (init?.signal) {
+    init.signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  const query = new URLSearchParams({
+    originLat: params.originLat.toString(),
+    originLon: params.originLon.toString(),
+    destLat: params.destLat.toString(),
+    destLon: params.destLon.toString(),
+  });
+  if (params.departAt) query.set("departAt", params.departAt);
+  if (params.modes?.length) query.set("modes", params.modes.join(","));
+  if (typeof params.maxWalkMinutes === "number") query.set("maxWalkMinutes", params.maxWalkMinutes.toString());
+  if (typeof params.maxTransfers === "number") query.set("maxTransfers", params.maxTransfers.toString());
+
+  try {
+    const response = await fetch(buildUrl(`/api/trip-planner?${query.toString()}`), {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      let payload: { error?: string; message?: string } | null = null;
+      try {
+        payload = (await response.json()) as { error?: string; message?: string };
+      } catch {
+        payload = null;
+      }
+      if (payload?.error === "no_route") {
+        const err = new Error(payload.message ?? "No valid route found.");
+        err.name = "trip_planner_no_route";
+        throw err;
+      }
+      const err = new Error(payload?.message ?? `Trip planner request failed: ${response.status}`);
+      err.name = "trip_planner_request_failed";
+      throw err;
+    }
+    const payload = (await response.json()) as TripPlannerResponse;
+    const validation = validateTripPlannerResponse(payload);
+    if (!validation.ok) {
+      throw new Error(`Trip planner response invalid: ${validation.errors.join(", ")}`);
+    }
+    return payload;
+  } catch (error) {
+    if ((error as Error).name === "AbortError" && timedOut) {
+      throw new Error("trip_planner_timeout");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
 
 export interface StopLookupEntry {
   stopId: string;
@@ -174,4 +263,54 @@ export const fetchStopLookup = async (stopIds: string[]): Promise<StopLookupEntr
   return payload.stops ?? [];
 };
 
-export type { HomeResponse, GetStationBoardResponse, TripTrackResponse, LineSummary, LineOverview, SystemInsights, LineShapeResponse };
+export interface DonationConfig {
+  enabled: boolean;
+  mode: "test" | "live";
+  publishableKey?: string;
+}
+
+export interface DonationCheckoutPayload {
+  amount: number;
+  name?: string;
+  email?: string;
+}
+
+export interface DonationCheckoutResponse {
+  sessionId: string;
+  checkoutUrl: string | null;
+  amountCents: number;
+}
+
+export const fetchDonationConfig = async (): Promise<DonationConfig> => {
+  const response = await fetch(buildUrl("/api/donations/config"), { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Donation config failed: ${response.status}`);
+  }
+  return (await response.json()) as DonationConfig;
+};
+
+export const createDonationCheckout = async (
+  payload: DonationCheckoutPayload,
+): Promise<DonationCheckoutResponse> => {
+  const response = await fetch(buildUrl("/api/donations/checkout"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Donation checkout failed: ${response.status}`);
+  }
+  return (await response.json()) as DonationCheckoutResponse;
+};
+
+export type {
+  HomeResponse,
+  GetStationBoardResponse,
+  TripTrackResponse,
+  LineSummary,
+  LineOverview,
+  SystemInsights,
+  LineShapeResponse,
+  TripPlannerRequest,
+  TripPlannerResponse,
+};

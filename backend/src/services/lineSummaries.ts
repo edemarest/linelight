@@ -3,36 +3,24 @@ import type { MbtaCache } from "../cache/mbtaCache";
 import { extractFirstRelationshipId, extractRelationshipIds } from "../utils/jsonApi";
 import { mapRouteTypeToMode } from "../utils/routeMode";
 import type { LineSummary, Mode } from "../models/domain";
+import { normalizeHexColor } from "../utils/colors";
+import { getLineRouteIds } from "../utils/mbta";
 
 const DEFAULT_COLOR = "#6366f1";
-
-const toArray = <T>(value: T | T[] | null | undefined): T[] => {
-  if (!value) return [];
-  return Array.isArray(value) ? value : [value];
-};
-
-const getLineRouteIds = (line: MbtaLine): string[] => {
-  const relationshipIds = extractRelationshipIds(line.relationships?.routes);
-  if (relationshipIds.length > 0) {
-    return relationshipIds;
-  }
-  return [line.id];
-};
 
 const buildRoutesMap = (routes: MbtaRoute[]) =>
   new Map<string, MbtaRoute>(routes.map((route) => [route.id, route]));
 
 const determineColor = (line: MbtaLine, routesMap: Map<string, MbtaRoute>): string => {
-  const rawColor = line.attributes.color ?? null;
-  if (rawColor) return `#${rawColor}`;
+  const rawColor = normalizeHexColor(line.attributes.color);
+  if (rawColor) return rawColor;
 
   const firstRoute = getLineRouteIds(line)
     .map((routeId) => routesMap.get(routeId))
     .find(Boolean);
 
-  if (firstRoute?.attributes.color) {
-    return `#${firstRoute.attributes.color}`;
-  }
+  const routeColor = normalizeHexColor(firstRoute?.attributes.color);
+  if (routeColor) return routeColor;
 
   return DEFAULT_COLOR;
 };

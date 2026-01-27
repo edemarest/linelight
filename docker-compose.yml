@@ -6,6 +6,80 @@ services:
       - redis-data:/data
     command: ["redis-server", "--appendonly", "yes"]
 
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-linelight}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-linelight}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  db-setup:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - backend/.env
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@postgres:5432/linelight}
+      - GTFS_URL=${GTFS_URL:-https://cdn.mbta.com/MBTA_GTFS.zip}
+      - PGSSLMODE=${PGSSLMODE:-disable}
+      - PGSSLROOTCERT=${PGSSLROOTCERT:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "node dist/scripts/dbMigrate.js && node dist/scripts/gtfsSeed.js"]
+    restart: "no"
+
+  osrm-setup:
+    image: osrm/osrm-backend:latest
+    platform: linux/amd64
+    restart: "no"
+    volumes:
+      - osrm-data:/data
+    depends_on:
+      osrm-download:
+        condition: service_completed_successfully
+    command:
+      [
+        "bash",
+        "-c",
+        "if [ ! -f /data/ma.osrm ]; then osrm-extract -p /opt/foot.lua /data/ma.osm.pbf && osrm-partition /data/ma.osrm && osrm-customize /data/ma.osrm; fi",
+      ]
+
+  osrm-download:
+    image: curlimages/curl:8.8.0
+    restart: "no"
+    user: "0:0"
+    volumes:
+      - osrm-data:/data
+    command:
+      [
+        "sh",
+        "-c",
+        "if [ ! -f /data/ma.osm.pbf ]; then curl -L -o /data/ma.osm.pbf https://download.geofabrik.de/north-america/us/massachusetts-latest.osm.pbf; fi",
+      ]
+
+  osrm:
+    image: osrm/osrm-backend:latest
+    platform: linux/amd64
+    restart: unless-stopped
+    volumes:
+      - osrm-data:/data
+    command: ["osrm-routed", "--algorithm", "mld", "/data/ma.osrm"]
+    depends_on:
+      osrm-setup:
+        condition: service_completed_successfully
+
   backend:
     build:
       context: .
@@ -19,12 +93,25 @@ services:
       - MBTA_RATE_LIMIT_WINDOW_MS=${MBTA_RATE_LIMIT_WINDOW_MS:-60000}
       - MBTA_RATE_LIMIT_MAX_REQUESTS=${MBTA_RATE_LIMIT_MAX_REQUESTS:-1000}
       - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@postgres:5432/linelight}
+      - GTFS_URL=${GTFS_URL:-https://cdn.mbta.com/MBTA_GTFS.zip}
+      - PGSSLMODE=${PGSSLMODE:-disable}
+      - PGSSLROOTCERT=${PGSSLROOTCERT:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - MBTA_MAX_RETRIES=${MBTA_MAX_RETRIES:-4}
       - MBTA_RETRY_BASE_DELAY_MS=${MBTA_RETRY_BASE_DELAY_MS:-500}
       - MBTA_RETRY_MAX_DELAY_MS=${MBTA_RETRY_MAX_DELAY_MS:-7500}
+      - OSRM_BASE_URL=${OSRM_BASE_URL:-http://osrm:5000}
+      - OSRM_TIMEOUT_MS=${OSRM_TIMEOUT_MS:-1500}
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      db-setup:
+        condition: service_completed_successfully
+      osrm:
+        condition: service_started
     ports:
       - "4000:4000"
     restart: unless-stopped
@@ -41,8 +128,10 @@ services:
     depends_on:
       - backend
     ports:
-      - "3000:3000"
+      - "3001:3000"
     restart: unless-stopped
 
 volumes:
   redis-data:
+  postgres-data:
+  osrm-data:

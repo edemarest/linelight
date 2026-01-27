@@ -1,3 +1,4 @@
+// Route-type to mode mapping shared across services.
 import type { RouteType } from "../models/mbta";
 import type { Mode } from "../models/domain";
 

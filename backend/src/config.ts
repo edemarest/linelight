@@ -1,4 +1,5 @@
-import dotenv from "dotenv";
+// Centralized environment config with sensible defaults for local/dev.
+import * as dotenv from "dotenv";
 
 dotenv.config();
 

@@ -1,3 +1,4 @@
+// In-memory cache with optional Redis persistence for MBTA data + hot responses.
 import type {
   MbtaAlert,
   MbtaLine,
@@ -97,7 +98,7 @@ export class MbtaCache {
             entry.data = new Map(entry.data as Array<[string, Coordinate[][]]>);
           }
           setter(entry);
-          logger.info("Hydrated cache entry from Redis", { entry: key });
+          logger.debug("Hydrated cache entry from Redis", { entry: key });
         } catch (error) {
           logger.warn("Failed to hydrate cache entry", { entry: key, message: String(error) });
         }

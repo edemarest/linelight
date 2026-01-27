@@ -7,6 +7,10 @@ import { buildHomeSnapshot } from "../services/homeSnapshot";
 import type { StopEtaSnapshot } from "../services/etaService";
 import type { BlendedDeparture } from "../services/etaBlender";
 
+delete process.env.DATABASE_URL;
+delete process.env.PGSSLROOTCERT;
+delete process.env.PGSSL_SERVERNAME;
+
 type StopOverrides = Omit<Partial<MbtaStop>, "attributes"> & {
   attributes?: Partial<MbtaStop["attributes"]>;
 };

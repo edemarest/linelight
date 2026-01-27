@@ -1,16 +1,18 @@
+// Line geometry builder: prefers cached DB shapes, falls back to MBTA API.
 import type { MbtaCache } from "../cache/mbtaCache";
 import type { Coordinate } from "../models/domain";
 import type { MbtaLine, MbtaRoute } from "../models/mbta";
 import type { MbtaClient } from "../mbta/client";
-import { extractRelationshipIds } from "../utils/jsonApi";
 import { logger } from "../utils/logger";
+import { chunkArray, ensureArray } from "../utils/collections";
+import { normalizeHexColor } from "../utils/colors";
+import { getLineRouteIds } from "../utils/mbta";
 import polyline from "@mapbox/polyline";
+import { getRoutesCached, getLineShapesByRouteCached, getLineShapesByRoutesCached } from "../db";
+import { createTimings } from "../utils/timing";
 
-const formatColor = (value: string | null | undefined): string | null => {
-  if (!value) return null;
-  const normalized = value.startsWith("#") ? value : `#${value}`;
-  return normalized.toUpperCase();
-};
+const formatColor = (value: string | null | undefined): string | null =>
+  normalizeHexColor(value, { uppercase: true });
 
 export interface LineShapePayload {
   lineId: string;
@@ -37,11 +39,6 @@ const fetchShapesForLine = async (
     .filter((coords) => coords.length > 1);
 };
 
-const getLineRouteIds = (line: MbtaLine): string[] => {
-  const routeIds = extractRelationshipIds(line.relationships?.routes);
-  return routeIds.length > 0 ? routeIds : [];
-};
-
 const formatLineColor = (line: MbtaLine, routesEntry: MbtaRoute[] | undefined, routeIds: string[]) => {
   const rawColor = line.attributes.color;
   if (rawColor) return formatColor(rawColor);
@@ -58,29 +55,125 @@ const formatLineTextColor = (line: MbtaLine, routesEntry: MbtaRoute[] | undefine
   return route ? formatColor(route.attributes.text_color) : null;
 };
 
-const ensureArray = <T>(value: T | T[] | undefined | null): T[] => {
-  if (!value) return [];
-  return Array.isArray(value) ? value : [value];
-};
-
 export const buildLineShapes = async (
   cache: MbtaCache,
   client: MbtaClient,
   lineId: string,
 ): Promise<LineShapePayload | null> => {
+  const timing = createTimings();
+  const logTiming = (source: string, count: number) => {
+    logger.debug("Line shapes timing", {
+      lineId,
+      source,
+      durationMs: timing.totalMs(),
+      shapes: count,
+    });
+  };
+
+  // Special handling for CommuterRail meta-line: fetch all CR-* routes
+  if (lineId === "CommuterRail") {
+    try {
+      const dbRoutes = await getRoutesCached();
+      const crRouteIds = dbRoutes.filter((r) => r.id.startsWith("CR-")).map((r) => r.id);
+
+      if (crRouteIds.length > 0) {
+        logger.debug("Fetching CommuterRail shapes for routes", { count: crRouteIds.length, routes: crRouteIds });
+        const allShapes: Coordinate[][] = [];
+
+        const shapeMap = await getLineShapesByRoutesCached(crRouteIds);
+        for (const routeId of crRouteIds) {
+          const polylines = shapeMap.get(routeId) ?? [];
+          const routeShapes = polylines
+            .map((shape) => decodePolylineToCoords(shape))
+            .filter((coords) => coords.length > 1);
+          allShapes.push(...routeShapes);
+        }
+
+        if (allShapes.length > 0) {
+          logTiming("db-commuter-rail", allShapes.length);
+          return {
+            lineId: "CommuterRail",
+            color: "#B15CFF", // Purple color for CR
+            textColor: "#FFFFFF",
+            shapes: allShapes,
+          };
+        }
+      }
+      logger.warn("No CommuterRail routes found in database", { lineId });
+    } catch (error) {
+      logger.error("Failed to fetch CommuterRail shapes", { lineId, message: String(error) });
+    }
+    const routesEntry = cache.getRoutes();
+    const cachedCrRoutes = (routesEntry?.data ?? []).filter((route) => route.id.startsWith("CR-")).map((route) => route.id);
+    if (cachedCrRoutes.length === 0) {
+      logger.warn("No CommuterRail routes available in cache for fallback", { lineId });
+      return null;
+    }
+
+    try {
+      const allShapes: Coordinate[][] = [];
+      const routeChunks = chunkArray(cachedCrRoutes, 10);
+      for (const chunk of routeChunks) {
+        const response = await client.getShapes({
+          "filter[route]": chunk.join(","),
+          "page[limit]": 2000,
+        });
+        const chunkShapes = ensureArray(response.data)
+          .map((shape) => decodePolylineToCoords(shape.attributes.polyline))
+          .filter((coords) => coords.length > 1);
+        allShapes.push(...chunkShapes);
+      }
+      if (allShapes.length > 0) {
+        logTiming("mbta-commuter-rail", allShapes.length);
+        return {
+          lineId: "CommuterRail",
+          color: "#B15CFF",
+          textColor: "#FFFFFF",
+          shapes: allShapes,
+        };
+      }
+    } catch (error) {
+      logger.error("Failed to fetch CommuterRail shapes from MBTA", { lineId, message: String(error) });
+    }
+    return null;
+  }
+
+  try {
+    const polylines = await getLineShapesByRouteCached(lineId);
+    if (polylines.length > 0) {
+      const dbRoutes = await getRoutesCached();
+      const route = dbRoutes.find((entry) => entry.id === lineId) ?? null;
+      const shapes = polylines
+        .map((shape) => decodePolylineToCoords(shape))
+        .filter((coords) => coords.length > 1);
+      if (shapes.length > 0) {
+        logTiming("db", shapes.length);
+        return {
+          lineId,
+          color: formatColor(route?.color ?? null),
+          textColor: formatColor(route?.textColor ?? null),
+          shapes,
+        };
+      }
+    }
+  } catch (error) {
+    logger.warn("DB shapes lookup failed, falling back to MBTA", { lineId, message: String(error) });
+  }
+
   const linesEntry = cache.getLines();
   const routesEntry = cache.getRoutes();
   const cachedLine = linesEntry?.data.find((line) => line.id === lineId);
-  const routeIdsForLine = cachedLine ? getLineRouteIds(cachedLine) : [];
+  const routeIdsForLine = cachedLine ? getLineRouteIds(cachedLine, { fallbackToLineId: false }) : [];
 
   if (cachedLine && routeIdsForLine.length > 0) {
     let shapesEntry = cache.getShapes();
     let shapes = shapesEntry?.data.get(lineId);
 
     if (shapes && shapes.length > 0) {
-      logger.info("Line shapes cache hit (line)", { lineId, routes: routeIdsForLine.length, count: shapes.length });
+      logger.debug("Line shapes cache hit (line)", { lineId, routes: routeIdsForLine.length, count: shapes.length });
+      logTiming("cache", shapes.length);
     } else {
-      logger.info("Line shapes cache miss — fetching from MBTA (line)", { lineId, routes: routeIdsForLine.length });
+      logger.debug("Line shapes cache miss — fetching from MBTA (line)", { lineId, routes: routeIdsForLine.length });
       const fetchedShapes = (
         await Promise.all(routeIdsForLine.map((routeId) => fetchShapesForLine(client, routeId)))
       )
@@ -97,7 +190,8 @@ export const buildLineShapes = async (
       cache.setShapes(shapeMap);
       shapesEntry = cache.getShapes();
       shapes = fetchedShapes;
-      logger.info("Fetched line shapes (line)", { lineId, fetchedCount: shapes.length });
+      logger.debug("Fetched line shapes (line)", { lineId, fetchedCount: shapes.length });
+      logTiming("mbta", shapes.length);
     }
 
     return {
@@ -112,9 +206,10 @@ export const buildLineShapes = async (
   let shapes = shapesEntry?.data.get(lineId);
 
   if (shapes && shapes.length > 0) {
-    logger.info("Line shapes cache hit", { lineId, count: shapes.length });
+    logger.debug("Line shapes cache hit", { lineId, count: shapes.length });
+    logTiming("cache", shapes.length);
   } else {
-    logger.info("Line shapes cache miss — fetching from MBTA", { lineId });
+    logger.debug("Line shapes cache miss — fetching from MBTA", { lineId });
     const fetchedShapes = await fetchShapesForLine(client, lineId);
     if (fetchedShapes.length === 0) {
       logger.warn("No shapes returned from MBTA for line", { lineId });
@@ -125,7 +220,8 @@ export const buildLineShapes = async (
     cache.setShapes(shapeMap);
     shapesEntry = cache.getShapes();
     shapes = fetchedShapes;
-    logger.info("Fetched line shapes", { lineId, fetchedCount: shapes.length });
+    logger.debug("Fetched line shapes", { lineId, fetchedCount: shapes.length });
+    logTiming("mbta", shapes.length);
   }
 
   const routeMeta: MbtaRoute | undefined = routesEntry?.data.find((route) => route.id === lineId);

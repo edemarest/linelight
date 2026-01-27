@@ -1,3 +1,4 @@
+// Station board response shapes shared between API and UI.
 import type { EtaSource, IsoTimestamp, ServiceStatus, Mode } from "./common";
 
 export interface GetStationBoardResponse {
@@ -45,6 +46,8 @@ export interface StationDeparture {
   scheduledTime?: IsoTimestamp;
   predictedTime?: IsoTimestamp;
   etaMinutes?: number | null;
+  tripId?: string;
+  vehicleId?: string | null;
   source: EtaSource;
   status: ServiceStatus;
 }
@@ -60,6 +63,7 @@ export interface StationAlert {
 export interface StationFacility {
   id: string;
   type: "elevator" | "escalator" | "parking" | "other";
+  subtype?: string;
   status: "available" | "unavailable" | "limited" | "unknown";
   description?: string;
   capacity?: number;

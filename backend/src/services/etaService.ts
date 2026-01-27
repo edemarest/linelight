@@ -1,9 +1,11 @@
+// ETA snapshot builder that merges cached predictions with blended results.
 import type { MbtaClient } from "../mbta/client";
 import type { MbtaCache } from "../cache/mbtaCache";
 import type { MbtaPrediction, MbtaTrip } from "../models/mbta";
 import { extractFirstRelationshipId } from "../utils/jsonApi";
 import type { BlendedDeparture, BlendOptions } from "./etaBlender";
 import { fetchBlendedDepartures } from "./etaBlender";
+import { parseTimestamp } from "../utils/time";
 
 const toMillis = (value: string | null): number | null => {
   if (!value) return null;
@@ -28,12 +30,6 @@ const cloneDeparture = (departure: BlendedDeparture): BlendedDeparture => ({
 const computeMinutesDiff = (from: number, to: number | null): number | null => {
   if (to == null) return null;
   return Math.round((to - from) / 60000);
-};
-
-const parseTimestamp = (value: string | null | undefined): number | null => {
-  if (!value) return null;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
 };
 
 const deriveStatusFromPrediction = (prediction: MbtaPrediction): BlendedDeparture["status"] => {

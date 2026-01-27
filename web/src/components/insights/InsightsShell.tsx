@@ -111,9 +111,15 @@ export const InsightsShell = () => {
     staleTime: 5 * 60_000,
   });
 
+  const commuterRailStationsQuery = useQuery({
+    queryKey: ["stations", "commuter_rail"],
+    queryFn: () => fetchStations("commuter_rail" as ModeFilter, 900),
+    staleTime: 5 * 60_000,
+  });
+
   const stopNameById = useMemo(() => {
     const map = new Map<string, string>();
-    const stations = [...(subwayStationsQuery.data ?? []), ...(busStationsQuery.data ?? [])];
+    const stations = [...(subwayStationsQuery.data ?? []), ...(busStationsQuery.data ?? []), ...(commuterRailStationsQuery.data ?? [])];
     stations.forEach((station) => {
       if (station.stopId) map.set(station.stopId, station.name);
       (station.platformStopIds ?? []).forEach((platformId) => {
@@ -126,7 +132,7 @@ export const InsightsShell = () => {
       });
     });
     return map;
-  }, [busStationsQuery.data, subwayStationsQuery.data]);
+  }, [busStationsQuery.data, commuterRailStationsQuery.data, subwayStationsQuery.data]);
 
   const overviewsQuery = useQuery({
     queryKey: ["systemSegmentOverviews", insights?.generatedAt],

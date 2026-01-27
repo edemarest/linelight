@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+// Stop sheet panel showing departures, alerts, and facilities for a station.
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject, type ComponentType } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchStationBoard, fetchRouteShapes } from "@/lib/api";
+import { fetchStationBoard } from "@/lib/api";
 import type {
   GetStationBoardResponse,
   StationBoardRoutePrimary,
@@ -10,7 +11,6 @@ import type {
   StationAlert,
   StationFacility,
   StationEta,
-  LineShapeResponse,
 } from "@linelight/core";
 import { formatEta } from "@/lib/time";
 import { EtaSourceIndicator } from "./EtaSourceIndicator";
@@ -27,6 +27,13 @@ import {
   FiXCircle,
   FiClock,
   FiMap,
+  FiArrowUpCircle,
+  FiShuffle,
+  FiTruck,
+  FiGrid,
+  FiCreditCard,
+  FiLock,
+  FiNavigation,
 } from "react-icons/fi";
 import { humanizeDirection } from "@/lib/directions";
 import { getLineToken, getDirectionToken } from "@/lib/designTokens";
@@ -35,12 +42,15 @@ import { getLandmarkImage, getStopHue } from "@/lib/stopStyling";
 
 interface StopSheetPanelProps {
   stopId: string;
+  stopName?: string;
   isOpen: boolean;
   platformStopIds?: string[];
   preferredDirection?: string | null;
   onClose: () => void;
   onFollowTrip: (tripId: string | null) => void;
-  onBusRoutesChange?: (shapes: LineShapeResponse[]) => void;
+  followError?: string;
+  followLoading?: boolean;
+  onRouteSelect?: (routeId: string | null) => void;
   mapPanelRef?: RefObject<HTMLElement | null>;
   panelRootRef?: RefObject<HTMLElement | null>;
   allowRefs?: Array<RefObject<HTMLElement | null>>;
@@ -93,6 +103,12 @@ const normalizeDestinationLabel = (value?: string | null): string | null => {
   return trimmed;
 };
 
+const isGenericDirectionLabel = (value?: string | null) => {
+  if (!value) return true;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "inbound" || normalized === "outbound" || normalized === "unknown";
+};
+
 const formatTimeLabel = (iso?: string) => {
   if (!iso) return "—";
   try {
@@ -111,7 +127,7 @@ type RouteGroup = {
   directions: StationBoardRoutePrimary[];
 };
 
-type StationDepartureWithTrip = StationDeparture & { tripId?: string | null };
+type StationDepartureWithTrip = StationDeparture & { tripId?: string | null; vehicleId?: string | null };
 
 const normalizeDirectionForComparison = (direction?: string | null): string | null => {
   if (!direction) return null;
@@ -130,6 +146,39 @@ const directionsMatch = (departureDirection?: string | null, routeDirection?: st
     normalizedDeparture.includes(normalizedRoute) ||
     normalizedRoute.includes(normalizedDeparture)
   );
+};
+
+const getDepartureTimestamp = (departure: StationDeparture): number | null => {
+  const time = departure.predictedTime ?? departure.scheduledTime ?? null;
+  if (!time) return null;
+  const ts = Date.parse(time);
+  return Number.isNaN(ts) ? null : ts;
+};
+
+const compareDepartures = (a: StationDeparture, b: StationDeparture): number => {
+  const aTs = getDepartureTimestamp(a);
+  const bTs = getDepartureTimestamp(b);
+  if (aTs != null && bTs != null && aTs !== bTs) return aTs - bTs;
+  if (aTs == null && bTs != null) return 1;
+  if (aTs != null && bTs == null) return -1;
+
+  const aEta = a.etaMinutes ?? Number.POSITIVE_INFINITY;
+  const bEta = b.etaMinutes ?? Number.POSITIVE_INFINITY;
+  if (aEta !== bEta) return aEta - bEta;
+
+  const aSourceRank = a.predictedTime ? 0 : 1;
+  const bSourceRank = b.predictedTime ? 0 : 1;
+  if (aSourceRank !== bSourceRank) return aSourceRank - bSourceRank;
+
+  const aLabel = a.destination ?? "";
+  const bLabel = b.destination ?? "";
+  return aLabel.localeCompare(bLabel);
+};
+
+const getDepartureMinuteKey = (departure: StationDeparture): number | null => {
+  const ts = getDepartureTimestamp(departure);
+  if (ts == null) return null;
+  return Math.floor(ts / 60000);
 };
 
 const toDirectionId = (direction?: string | null): 0 | 1 | null => {
@@ -168,7 +217,7 @@ const mapEtaToDeparture = (
   etaMinutes: eta.etaMinutes,
   source: eta.source ?? "unknown",
   status: eta.status ?? "on_time",
-  tripId: eta.tripId ?? null,
+  tripId: eta.tripId,
 });
 
 const getRouteDotLabel = (routeLabel: string, routeId: string): string => {
@@ -198,22 +247,107 @@ const LoadingSkeleton = () => (
   </div>
 );
 
-const AlertList = ({ alerts }: { alerts: StationAlert[] }) => {
-  if (alerts.length === 0) {
+const ALERT_EFFECT_LABELS: Record<string, string> = {
+  DELAY: "Delay",
+  SERVICE_CHANGE: "Service change",
+  SHUTTLE: "Shuttle",
+  DETOUR: "Detour",
+  STOP_CLOSED: "Stop closed",
+  STATION_CLOSED: "Station closed",
+  SUSPENSION: "Suspension",
+  CANCELLATION: "Cancellation",
+  MODIFIED_SERVICE: "Modified service",
+  ADDITIONAL_SERVICE: "Additional service",
+  TRACK_CHANGE: "Track change",
+  DOCK_CLOSED: "Dock closed",
+  DOCK_ISSUE: "Dock issue",
+  ACCIDENT: "Accident",
+  WEATHER: "Weather",
+  MAINTENANCE: "Maintenance",
+  UNKNOWN: "Service alert",
+};
+
+const formatAlertEffect = (effect?: string | null) => {
+  if (!effect) return null;
+  const trimmed = effect.trim();
+  if (!trimmed) return null;
+  const normalized = ALERT_EFFECT_LABELS[trimmed];
+  if (normalized) return normalized;
+  return trimmed
+    .toLowerCase()
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+};
+
+const normalizeAlertText = (value?: string | null) => value?.trim() ?? "";
+
+const AlertList = ({ alerts, isLoading }: { alerts: StationAlert[]; isLoading: boolean }) => {
+  const dedupedAlerts = useMemo(() => {
+    const map = new Map<string, {
+      key: string;
+      title: string;
+      description?: string;
+      effectLabel: string | null;
+      severity: StationAlert["severity"];
+      count: number;
+    }>();
+    alerts.forEach((alert) => {
+      const effectLabel = formatAlertEffect(alert.effect);
+      const title = normalizeAlertText(alert.header) || effectLabel || "Service alert";
+      const description = normalizeAlertText(alert.description) || undefined;
+      const key = `${title}|${description ?? ""}|${alert.severity}|${effectLabel ?? ""}`;
+      const existing = map.get(key);
+      if (existing) {
+        existing.count += 1;
+        return;
+      }
+      map.set(key, {
+        key,
+        title,
+        description,
+        effectLabel,
+        severity: alert.severity,
+        count: 1,
+      });
+    });
+    return Array.from(map.values());
+  }, [alerts]);
+
+  if (isLoading) {
     return (
-      <div className="chip chip-live flex items-center gap-2 text-sm">
+      <div className="chip flex items-center gap-2 text-sm">
+        <FiInfo /> Loading alerts…
+      </div>
+    );
+  }
+  if (dedupedAlerts.length === 0) {
+    return (
+      <div className="chip chip-success flex items-center gap-2 text-sm">
         <FiCheckCircle /> No active alerts for this stop.
       </div>
     );
   }
   return (
     <div className="space-y-3">
-      {alerts.map((alert) => (
-        <div key={alert.id} className="panel border-[color:var(--line-orange)]/40 bg-white text-[color:var(--foreground)] shadow-sm">
-          <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.3em]" style={{ color: "var(--line-orange)" }}>
-            <FiAlertTriangle /> {alert.severity}
-          </p>
-          <p className="mt-1 font-semibold">{alert.header}</p>
+      {dedupedAlerts.map((alert) => (
+        <div key={alert.key} className="panel border-[color:var(--line-orange)]/40 bg-white text-[color:var(--foreground)] shadow-sm">
+          <div className="flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-[0.3em]" style={{ color: "var(--line-orange)" }}>
+            <span className="flex items-center gap-2">
+              <FiAlertTriangle /> {alert.severity}
+            </span>
+            {alert.effectLabel && alert.effectLabel !== alert.title && (
+              <span className="chip text-[10px]" style={{ borderColor: "var(--border)", color: "var(--muted-strong)" }}>
+                {alert.effectLabel}
+              </span>
+            )}
+            {alert.count > 1 && (
+              <span className="chip text-[10px]" style={{ borderColor: "var(--border)", color: "var(--muted-strong)" }}>
+                {alert.count} alerts
+              </span>
+            )}
+          </div>
+          <p className="mt-1 font-semibold">{alert.title}</p>
           {alert.description && <p className="mt-1 text-xs" style={{ color: "var(--muted)" }}>{alert.description}</p>}
         </div>
       ))}
@@ -221,7 +355,168 @@ const AlertList = ({ alerts }: { alerts: StationAlert[] }) => {
   );
 };
 
-const FacilitiesList = ({ facilities }: { facilities: StationFacility[] }) => {
+type FacilityCategory = "elevator" | "escalator" | "boarding" | "ticketing" | "parking" | "bike" | "other";
+
+const normalizeFacilityLabel = (label: string) => {
+  return label
+    .replace(/\b(Elevator|Escalator|fare vending machine|portable boarding lift)\s+\d+\b/gi, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+};
+
+const FACILITY_SUBTYPE_LABELS: Record<string, string> = {
+  fare_vending_machine: "Fare vending machine",
+  ticket_window: "Ticket window",
+  fare_media_assistant: "Customer service",
+  portable_boarding_lift: "Boarding lift",
+  high_level_platform: "High-level platform",
+  mini_high_platform: "Mini-high platform",
+  bike_storage: "Bike storage",
+  bike_rack: "Bike rack",
+  ramp: "Ramp access",
+  parking: "Parking",
+};
+
+const resolveFacilityLabel = (facility: StationFacility) => {
+  const description = normalizeFacilityLabel(facility.description ?? "");
+  const subtype = (facility.subtype ?? "").toLowerCase();
+  const subtypeLabel = FACILITY_SUBTYPE_LABELS[subtype];
+  if (!description) return subtypeLabel ?? "Facility";
+  if (!subtypeLabel) return description;
+  const lower = description.toLowerCase();
+  const hasKeyword =
+    lower.includes("elevator") ||
+    lower.includes("escalator") ||
+    lower.includes("fare") ||
+    lower.includes("ticket") ||
+    lower.includes("boarding") ||
+    lower.includes("platform") ||
+    lower.includes("lift") ||
+    lower.includes("bike") ||
+    lower.includes("parking") ||
+    lower.includes("ramp");
+  if (!hasKeyword && description.length <= 36) {
+    return `${description} - ${subtypeLabel}`;
+  }
+  return description;
+};
+
+const categorizeFacility = (facility: StationFacility): FacilityCategory => {
+  const subtype = (facility.subtype ?? "").toLowerCase();
+  if (facility.type === "elevator" || subtype === "elevator") return "elevator";
+  if (facility.type === "escalator" || subtype === "escalator") return "escalator";
+  if (facility.type === "parking" || subtype === "parking" || subtype === "parking_area" || subtype === "garage") {
+    return "parking";
+  }
+  if (
+    subtype === "fare_vending_machine" ||
+    subtype === "ticket_window" ||
+    subtype === "fare_media_assistant"
+  ) {
+    return "ticketing";
+  }
+  if (
+    subtype === "portable_boarding_lift" ||
+    subtype === "high_level_platform" ||
+    subtype === "mini_high_platform" ||
+    subtype === "elevated_subplatform" ||
+    subtype === "fully_elevated_platform" ||
+    subtype === "ramp"
+  ) {
+    return "boarding";
+  }
+  if (subtype === "bike_storage" || subtype === "bike_rack") {
+    return "bike";
+  }
+  return "other";
+};
+
+const FACILITY_GROUPS = [
+  { type: "elevator" as const, label: "Elevators", icon: FiArrowUpCircle, accent: "var(--line-blue)" },
+  { type: "escalator" as const, label: "Escalators", icon: FiShuffle, accent: "var(--line-green)" },
+  { type: "boarding" as const, label: "Boarding access", icon: FiNavigation, accent: "var(--line-purple)" },
+  { type: "ticketing" as const, label: "Ticketing", icon: FiCreditCard, accent: "var(--line-orange)" },
+  { type: "parking" as const, label: "Parking", icon: FiTruck, accent: "var(--line-silver)" },
+  { type: "bike" as const, label: "Bike storage", icon: FiLock, accent: "var(--line-silver)" },
+  { type: "other" as const, label: "Other facilities", icon: FiGrid, accent: "var(--muted)" },
+];
+
+const FacilitiesList = ({ facilities, isLoading }: { facilities: StationFacility[]; isLoading: boolean }) => {
+  const grouped = useMemo(() => {
+    const buckets = new Map<FacilityCategory, Map<string, {
+      key: string;
+      label: string;
+      count: number;
+      statuses: Set<StationFacility["status"]>;
+      capacityLabel: string | null;
+    }>>();
+    facilities.forEach((facility) => {
+      const category = categorizeFacility(facility);
+      const label = resolveFacilityLabel(facility);
+      const capacityLabel =
+        facility.capacity != null
+          ? `${facility.available ?? "?"}/${facility.capacity}`
+          : facility.available != null
+            ? `${facility.available} available`
+            : null;
+      const bucket = buckets.get(category) ?? new Map();
+      const existing = bucket.get(label);
+      if (existing) {
+        existing.count += 1;
+        existing.statuses.add(facility.status ?? "unknown");
+        existing.capacityLabel = null;
+      } else {
+        bucket.set(label, {
+          key: label,
+          label,
+          count: 1,
+          statuses: new Set([facility.status ?? "unknown"]),
+          capacityLabel,
+        });
+      }
+      buckets.set(category, bucket);
+    });
+    return FACILITY_GROUPS.map((group) => ({
+      ...group,
+      facilities: Array.from(buckets.get(group.type)?.values() ?? [])
+        .map((entry) => {
+          const statuses = Array.from(entry.statuses.values());
+          const status = statuses.length === 1 ? statuses[0] : null;
+          return {
+            key: entry.key,
+            label: entry.label,
+            count: entry.count,
+            status,
+            capacityLabel: entry.count === 1 ? entry.capacityLabel : null,
+          };
+        })
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    }));
+  }, [facilities]);
+
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    const defaults: Record<string, boolean> = {};
+    const hasElevator = grouped.find((group) => group.type === "elevator" && group.facilities.length > 0);
+    const hasEscalator = grouped.find((group) => group.type === "escalator" && group.facilities.length > 0);
+    if (hasElevator) defaults.elevator = true;
+    if (hasEscalator) defaults.escalator = true;
+    if (!hasElevator && !hasEscalator) {
+      const first = grouped.find((group) => group.facilities.length > 0);
+      if (first) defaults[first.type] = true;
+    }
+    const raf = requestAnimationFrame(() => setOpenGroups(defaults));
+    return () => cancelAnimationFrame(raf);
+  }, [grouped]);
+
+  if (isLoading) {
+    return (
+      <div className="chip flex items-center gap-2 text-sm">
+        <FiInfo /> Loading facilities…
+      </div>
+    );
+  }
   if (facilities.length === 0) {
     return (
       <div className="chip flex items-center gap-2 text-sm">
@@ -229,19 +524,96 @@ const FacilitiesList = ({ facilities }: { facilities: StationFacility[] }) => {
       </div>
     );
   }
+
+  const getStatusTone = (status: StationFacility["status"]) => {
+    switch (status) {
+      case "available":
+        return { label: "Available", color: "var(--line-green)" };
+      case "limited":
+        return { label: "Limited", color: "var(--line-orange)" };
+      case "unavailable":
+        return { label: "Unavailable", color: "var(--line-red)" };
+      case "unknown":
+      default:
+        return { label: "Unknown", color: "var(--muted)" };
+    }
+  };
+
   return (
     <div className="space-y-3">
-      {facilities.map((facility) => (
-        <div key={facility.id} className="panel text-sm">
-          <p className="flex items-center gap-2 font-semibold capitalize">
-            <FiMapPin /> {facility.type}
-          </p>
-          <span className="chip mt-1">{facility.status ?? "Unknown"}</span>
-          {facility.description && (
-            <p className="mt-2 text-xs text-muted">{facility.description}</p>
-          )}
-        </div>
-      ))}
+      {grouped
+        .filter((group) => group.facilities.length > 0)
+        .map((group) => {
+          const isOpen = Boolean(openGroups[group.type]);
+          const Icon = group.icon as ComponentType<{ className?: string }>;
+          const sectionId = `facility-${group.type}`;
+          return (
+            <div key={group.type} className="rounded-2xl border" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+                onClick={() => setOpenGroups((prev) => ({ ...prev, [group.type]: !prev[group.type] }))}
+                aria-expanded={isOpen}
+                aria-controls={sectionId}
+                data-interactive="ghost"
+              >
+                <div className="flex items-center gap-3">
+                  <span
+                    className="flex h-9 w-9 items-center justify-center rounded-full border"
+                    style={{ borderColor: group.accent, color: group.accent }}
+                  >
+                    <Icon className="text-lg" />
+                  </span>
+                  <div>
+                    <p className="text-sm font-semibold">{group.label}</p>
+                    <p className="text-xs" style={{ color: "var(--muted)" }}>
+                      {group.facilities.length} {group.facilities.length === 1 ? "item" : "items"}
+                    </p>
+                  </div>
+                </div>
+                <FiChevronDown
+                  className="text-lg transition"
+                  style={{ transform: isOpen ? "rotate(180deg)" : "rotate(0deg)", color: "var(--muted)" }}
+                />
+              </button>
+              {isOpen && (
+                <div id={sectionId} className="space-y-2 border-t px-4 py-3" style={{ borderColor: "var(--border)" }}>
+                  {group.facilities.map((facility) => {
+                    const status = facility.status ?? null;
+                    const tone = status ? getStatusTone(status) : null;
+                    const metaLabel =
+                      facility.capacityLabel ??
+                      (facility.count > 1 ? `${facility.count} items` : null);
+                    return (
+                      <div key={facility.key} className="rounded-xl border px-3 py-2 text-sm" style={{ borderColor: "var(--border)" }}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-2">
+                            <FiMapPin className="mt-0.5 text-sm" style={{ color: group.accent }} />
+                            <div>
+                              <p className="font-semibold">
+                                {facility.label ?? group.label.slice(0, -1)}
+                              </p>
+                              {metaLabel && (
+                                <p className="text-xs" style={{ color: "var(--muted)" }}>
+                                  {metaLabel}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          {status && status !== "unknown" && tone && (
+                            <span className="chip text-xs" style={{ color: tone.color, borderColor: tone.color }}>
+                              {tone.label}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
     </div>
   );
 };
@@ -312,17 +684,26 @@ const DepartureList = ({
       {departures.map((departure, idx) => {
         const tone = statusTone(departure.status);
         const tripId = (departure as StationDepartureWithTrip).tripId ?? null;
+        const vehicleId = (departure as StationDepartureWithTrip).vehicleId ?? null;
+        const canFollow = Boolean(tripId && vehicleId);
         const lineToken = getLineToken(departure.routeId, themeMode);
         const isStriped = idx % 2 === 1;
         return (
           <button
             key={`${departure.routeId}-${departure.direction}-${departure.destination}-${idx}`}
             type="button"
-            className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-b px-4 py-2.5 text-left transition last:border-b-0 hover:bg-[var(--surface)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"
-            onClick={() => tripId && onFollowTrip(tripId)}
-            disabled={!tripId}
-            aria-disabled={!tripId}
-            title={tripId ? "Follow this trip" : "Trip tracking not available"}
+            className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-b px-4 py-2.5 text-left transition last:border-b-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"
+            onClick={() => canFollow && onFollowTrip(tripId)}
+            disabled={!canFollow}
+            aria-disabled={!canFollow}
+            title={
+              !tripId
+                ? "Trip tracking not available"
+                : !vehicleId
+                  ? "Live vehicle tracking unavailable for this trip"
+                  : "Follow this trip"
+            }
+            data-interactive="ghost"
             style={{ 
               color: "var(--foreground)", 
               background: isStriped ? `color-mix(in srgb, ${lineToken.color} 6%, var(--surface))` : "var(--surface)", 
@@ -330,19 +711,28 @@ const DepartureList = ({
             }}
           >
             <div>
-                <p className="text-base font-semibold">
-                  {normalizeDestinationLabel(departure.destination) ??
-                    defaultDestinationLabel ??
-                    departure.shortName ??
-                    departure.routeId ??
-                    humanizeDirection(departure.direction)}
-                </p>
+              <p className="text-base font-semibold">
+                {(() => {
+                  const normalized = normalizeDestinationLabel(departure.destination);
+                  if (normalized && !isGenericDirectionLabel(normalized)) return normalized;
+                  if (defaultDestinationLabel) return defaultDestinationLabel;
+                  return normalized ?? departure.shortName ?? departure.routeId ?? humanizeDirection(departure.direction);
+                })()}
+              </p>
               <div className="mt-1 flex items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
                 <span>{formatTimeLabel(departure.predictedTime ?? departure.scheduledTime)}</span>
                 {tone && (
                   <span className="inline-flex items-center gap-1" style={{ color: tone.text }}>
                     {tone.icon}
                     {tone.label}
+                  </span>
+                )}
+                {!canFollow && tripId && (
+                  <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.2em]" style={{ color: "var(--muted)" }}>
+                    Live tracking unavailable
+                    <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
+                      <InfoTooltip content="MBTA real-time data doesn't include a vehicle for this trip yet." />
+                    </span>
                   </span>
                 )}
               </div>
@@ -364,20 +754,56 @@ const DepartureList = ({
   );
 };
 
+const STATION_BOARD_CACHE_KEY = "linelight:stationBoardStopIdByStation";
+
+const readStationBoardCache = (): Record<string, string> => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(STATION_BOARD_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      return parsed as Record<string, string>;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return {};
+};
+
+const writeStationBoardCache = (stationId: string, boardStopId: string) => {
+  if (typeof window === "undefined") return;
+  try {
+    const cache = readStationBoardCache();
+    cache[stationId] = boardStopId;
+    window.localStorage.setItem(STATION_BOARD_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // ignore storage errors
+  }
+};
+
 export const StopSheetPanel = ({
   stopId,
+  stopName: stopNameProp,
   isOpen,
   onClose,
   onFollowTrip,
   platformStopIds,
   preferredDirection,
-  onBusRoutesChange,
+  onRouteSelect,
   mapPanelRef,
   panelRootRef,
   allowRefs,
   mobileSheetHeight,
   overlayHeight,
+  followError,
+  followLoading = false,
 }: StopSheetPanelProps) => {
+  const perfRenderStartRef = useRef<number | null>(null);
+  const perfRenderCountRef = useRef(0);
+  if (typeof window !== "undefined") {
+    perfRenderStartRef.current = performance.now();
+  }
   const safeAllowRefs = allowRefs ?? NO_EXTRA_REFS;
   const { mode: themeMode } = useThemeMode();
   const isDarkTheme = themeMode === "dark";
@@ -387,37 +813,82 @@ export const StopSheetPanel = ({
   const headerTitleColor = isDarkTheme ? "rgba(255,255,255,0.98)" : "rgba(5,5,7,0.95)";
   const closeButtonBg = isDarkTheme ? "rgba(6,7,12,0.7)" : "rgba(255,255,255,0.95)";
   const closeButtonColor = isDarkTheme ? "#f8fafc" : "#0f172a";
+  const cachedBoardStopId = useMemo(() => {
+    const cache = readStationBoardCache();
+    return cache[stopId] ?? null;
+  }, [stopId]);
+
+  const isNonBoardableStopId = useCallback((candidate?: string | null) => {
+    if (!candidate) return true;
+    return (
+      candidate.startsWith("node-") ||
+      candidate.startsWith("entrance-") ||
+      candidate.startsWith("door-") ||
+      candidate.startsWith("elevator-")
+    );
+  }, []);
+
   const stopOptions = useMemo(() => {
     const base = platformStopIds && platformStopIds.length > 0 ? platformStopIds : [stopId];
-    const deduped = Array.from(new Set(base.filter(Boolean)));
+    const deduped = Array.from(new Set(base.filter((id) => id && !isNonBoardableStopId(id))));
     const withoutPrimary = deduped.filter((id) => id !== stopId);
+    const ordered = isNonBoardableStopId(stopId) ? withoutPrimary : [stopId, ...withoutPrimary];
+    if (cachedBoardStopId && ordered.includes(cachedBoardStopId)) {
+      return [cachedBoardStopId, ...ordered.filter((id) => id !== cachedBoardStopId)];
+    }
     // Always try the canonical stop id first so we fetch the full station board.
-    return [stopId, ...withoutPrimary];
-  }, [platformStopIds, stopId]);
+    return ordered;
+  }, [platformStopIds, stopId, cachedBoardStopId, isNonBoardableStopId]);
+
+  const BOARD_TIMEOUT_MS = 7000;
 
   const boardQuery = useQuery({
     queryKey: ["stationBoard", stopOptions.join("|")],
     queryFn: async () => {
-      let lastError: unknown = null;
+      const withTimeout = <T,>(promise: Promise<T>, label: string) =>
+        new Promise<T>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(new Error(`Station board timeout for ${label}`));
+          }, BOARD_TIMEOUT_MS);
+          promise
+            .then((value) => {
+              clearTimeout(timer);
+              resolve(value);
+            })
+            .catch((error) => {
+              clearTimeout(timer);
+              reject(error);
+          });
+        });
+
+      const errors: unknown[] = [];
       for (const optionId of stopOptions) {
         try {
-          const board = await fetchStationBoard(optionId);
-          if (board) {
-            return board;
+          const board = await withTimeout(
+            fetchStationBoard(optionId, { includeAlerts: true, includeFacilities: true }),
+            optionId,
+          );
+          if (!board) {
+            throw new Error(`Station board unavailable for ${optionId}`);
           }
+          writeStationBoardCache(stopId, optionId);
+          return board;
         } catch (error) {
-          console.warn("[StopSheet] failed to load board for", optionId, error);
-          lastError = error;
+          errors.push(error);
         }
       }
-      throw lastError ?? new Error("Station board unavailable");
+
+      throw new Error("Station board unavailable");
     },
     enabled: isOpen && stopOptions.length > 0,
-    staleTime: 20_000,
+    retry: false,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
-
   const board = boardQuery.data;
+  const details = board?.details ?? { alerts: [], facilities: [] };
   const routes = useMemo(() => board?.primary.routes ?? [], [board]);
   const routeGroups = useMemo<RouteGroup[]>(() => {
     const map = new Map<string, RouteGroup>();
@@ -434,55 +905,16 @@ export const StopSheetPanel = ({
   const routeColorIds = useMemo(() => routeGroups.map((group) => group.routeId), [routeGroups]);
   const routeDestinationMap = useMemo(() => {
     const map = new Map<string, string>();
-    board?.details?.departures?.forEach((departure, index) => {
+    board?.details?.departures?.forEach((departure) => {
       const key = `${departure.routeId}-${departure.direction}`;
       const normalized = normalizeDestinationLabel(departure.destination);
-      console.log("[StopSheet] destination candidate", {
-        index,
-        key,
-        raw: departure.destination,
-        normalized,
-        source: departure.source,
-        eta: departure.etaMinutes,
-      });
       if (map.has(key)) return;
       if (normalized) {
         map.set(key, normalized);
       }
     });
-    console.log("[StopSheet] destination map entries", Array.from(map.entries()));
     return map;
   }, [board?.details?.departures]);
-
-  const busRouteIds = useMemo(() => {
-    const ids = routes
-      .filter((route) => route.mode === "bus")
-      .map((route) => route.routeId)
-      .filter((id, index, self) => self.indexOf(id) === index);
-    console.log('[StopSheet] Bus route IDs:', ids);
-    return ids;
-  }, [routes]);
-
-  const busRoutesShapesQuery = useQuery({
-    queryKey: ["busRouteShapes", busRouteIds.sort().join(",")],
-    queryFn: async () => {
-      if (busRouteIds.length === 0) return [];
-      console.log('[StopSheet] Fetching shapes for bus routes:', busRouteIds);
-      const results = await Promise.all(
-        busRouteIds.map((routeId) =>
-          fetchRouteShapes(routeId).catch((error) => {
-            console.error("[StopSheet] failed to load shapes for bus route", routeId, error);
-            return null;
-          })
-        )
-      );
-      const filtered = results.filter((shape): shape is LineShapeResponse => Boolean(shape));
-      console.log('[StopSheet] Loaded bus route shapes:', filtered.length, 'routes');
-      return filtered;
-    },
-    enabled: isOpen && busRouteIds.length > 0,
-    staleTime: 1000 * 60 * 5,
-  });
 
   const routeDirectionOptions = useMemo(() => {
     const priorityOrder: Record<string, number> = {
@@ -492,6 +924,7 @@ export const StopSheetPanel = ({
       "Green-D": 2,
       "Green-E": 2,
       Mattapan: 1,
+      CommuterRail: 1,
       Bus: 0,
     };
     return routeGroups
@@ -501,6 +934,10 @@ export const StopSheetPanel = ({
           const routeLabel = direction.shortName ?? group.shortName ?? group.routeId;
           const token = getLineToken(group.routeId, themeMode);
         const key = `${direction.routeId}-${direction.direction}`;
+        const etaMinutes =
+          direction.primaryEta?.etaMinutes ??
+          direction.extraEtas?.[0]?.etaMinutes ??
+          null;
     return {
       group,
       direction,
@@ -510,6 +947,7 @@ export const StopSheetPanel = ({
       routeLabel,
       lineToken: token,
       priority: priorityOrder[token.id] ?? 0,
+      etaMinutes,
       destinationLabel:
         routeDestinationMap.get(key) ?? direction.shortName ?? group.shortName ?? group.routeId,
     };
@@ -522,18 +960,7 @@ export const StopSheetPanel = ({
         return a.directionLabel.localeCompare(b.directionLabel);
       });
   }, [routeGroups, themeMode, routeDestinationMap]);
-  useEffect(() => {
-    console.log("[StopSheet] route option summaries", {
-      stopId,
-      options: routeDirectionOptions.map((option) => ({
-        key: option.directionKey,
-        routeId: option.group.routeId,
-        direction: option.direction.direction,
-        destinationLabel: option.destinationLabel,
-        sourceDestination: routeDestinationMap.get(option.directionKey),
-      })),
-    });
-  }, [stopId, routeDirectionOptions, routeDestinationMap]);
+  const lastRouteSelectRef = useRef<string | null>(null);
 
   const normalizedPreferredDirection = useMemo(
     () => (preferredDirection ? humanizeDirection(preferredDirection) : null),
@@ -567,11 +994,46 @@ export const StopSheetPanel = ({
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [selectedDirectionKey, setSelectedDirectionKey] = useState<string | null>(null);
   const [routeExpansion, setRouteExpansion] = useState<Record<string, boolean>>({});
-  const collapseEnabled = routeGroups.length > 1 && routeDirectionOptions.length > 4;
+  const collapseEnabled = routeDirectionOptions.length > 4;
   const singleRouteOnly = routeGroups.length <= 1;
-  const preferSingleColumnRoutes = singleRouteOnly || routeDirectionOptions.length <= 4;
-  const routeListGridClass = `grid gap-2 ${preferSingleColumnRoutes ? "sm:grid-cols-1" : "sm:grid-cols-2"}`;
   const areRoutesExpanded = collapseEnabled ? routeExpansion[stopId] ?? false : true;
+  const visibleRouteOptions = useMemo(() => {
+    if (!collapseEnabled || areRoutesExpanded) return routeDirectionOptions;
+
+    const byEta = (a: (typeof routeDirectionOptions)[number], b: (typeof routeDirectionOptions)[number]) => {
+      const etaA = a.etaMinutes ?? Number.POSITIVE_INFINITY;
+      const etaB = b.etaMinutes ?? Number.POSITIVE_INFINITY;
+      if (etaA !== etaB) return etaA - etaB;
+      if (a.priority !== b.priority) return b.priority - a.priority;
+      return a.routeLabel.localeCompare(b.routeLabel);
+    };
+
+    const inbound = routeDirectionOptions.filter((opt) => opt.directionId === 0).sort(byEta).slice(0, 2);
+    const outbound = routeDirectionOptions.filter((opt) => opt.directionId === 1).sort(byEta).slice(0, 2);
+    const neutral = routeDirectionOptions.filter((opt) => opt.directionId == null).sort(byEta);
+    const picked: Array<(typeof routeDirectionOptions)[number]> = [];
+    const maxPairs = Math.max(inbound.length, outbound.length);
+    for (let i = 0; i < maxPairs; i += 1) {
+      if (inbound[i]) picked.push(inbound[i]);
+      if (outbound[i]) picked.push(outbound[i]);
+    }
+    const seen = new Set(picked.map((opt) => opt.directionKey));
+    neutral.forEach((opt) => {
+      if (picked.length >= 4) return;
+      if (seen.has(opt.directionKey)) return;
+      seen.add(opt.directionKey);
+      picked.push(opt);
+    });
+    if (picked.length < 4) {
+      [...routeDirectionOptions].sort(byEta).forEach((opt) => {
+        if (picked.length >= 4) return;
+        if (seen.has(opt.directionKey)) return;
+        seen.add(opt.directionKey);
+        picked.push(opt);
+      });
+    }
+    return picked;
+  }, [areRoutesExpanded, collapseEnabled, routeDirectionOptions]);
 
   const activeRouteId = useMemo(() => {
     if (selectedRouteId && routeGroups.some((group) => group.routeId === selectedRouteId)) {
@@ -584,6 +1046,14 @@ export const StopSheetPanel = ({
     () => routeGroups.find((group) => group.routeId === activeRouteId) ?? routeGroups[0] ?? null,
     [routeGroups, activeRouteId],
   );
+
+  useEffect(() => {
+    if (!onRouteSelect) return;
+    const nextRouteId = activeRouteGroup?.routeId ?? null;
+    if (lastRouteSelectRef.current === nextRouteId) return;
+    lastRouteSelectRef.current = nextRouteId;
+    onRouteSelect(nextRouteId);
+  }, [activeRouteGroup?.routeId, onRouteSelect]);
 
   const activeDirectionKey = useMemo(() => {
     if (!activeRouteGroup) return null;
@@ -606,17 +1076,30 @@ export const StopSheetPanel = ({
     (option: (typeof routeDirectionOptions)[number]) => {
       setSelectedRouteId(option.group.routeId);
       setSelectedDirectionKey(option.directionKey);
+      onRouteSelect?.(option.group.routeId);
       if (collapseEnabled) {
         setRouteExpansion((prev) => ({ ...prev, [stopId]: false }));
       }
     },
-    [setSelectedRouteId, setSelectedDirectionKey, stopId, collapseEnabled],
+    [setSelectedRouteId, setSelectedDirectionKey, stopId, collapseEnabled, onRouteSelect],
   );
 
   const activeDirectionOption = useMemo(
     () => routeDirectionOptions.find((option) => option.directionKey === activeDirectionKey) ?? null,
     [routeDirectionOptions, activeDirectionKey],
   );
+
+  const displayRouteOptions = useMemo(() => {
+    if (!collapseEnabled || areRoutesExpanded) return routeDirectionOptions;
+    let options = [...visibleRouteOptions];
+    if (activeDirectionOption && !options.some((opt) => opt.directionKey === activeDirectionOption.directionKey)) {
+      options = [...options.slice(0, Math.max(0, 3)), activeDirectionOption];
+    }
+    return options;
+  }, [activeDirectionOption, areRoutesExpanded, collapseEnabled, routeDirectionOptions, visibleRouteOptions]);
+
+  const preferSingleColumnRoutes = singleRouteOnly || displayRouteOptions.length <= 1;
+  const routeListGridClass = `grid gap-2 ${preferSingleColumnRoutes ? "sm:grid-cols-1" : "sm:grid-cols-2"}`;
 
   const routeOptionButton = useCallback(
     (option: (typeof routeDirectionOptions)[number]) => {
@@ -639,6 +1122,7 @@ export const StopSheetPanel = ({
           }}
           onClick={() => handleRouteOptionSelect(option)}
           aria-pressed={isActive}
+          data-interactive="ghost"
         >
           <span
             className="flex h-6 w-6 items-center justify-center rounded-full text-[0.65rem] font-bold uppercase tracking-tight"
@@ -669,9 +1153,14 @@ export const StopSheetPanel = ({
     if (!activeRoute) {
       return { heroDeparture: null as StationDeparture | null, upcomingDepartures: [] as StationDeparture[] };
     }
+    const activeDirectionId = toDirectionId(activeRoute.direction);
     const detailed =
       board?.details?.departures?.filter((departure) => {
         if (departure.routeId !== activeRoute.routeId) return false;
+        const departureDirectionId = toDirectionId(departure.direction);
+        if (activeDirectionId != null && departureDirectionId != null) {
+          return activeDirectionId === departureDirectionId;
+        }
         if (!activeRoute.direction || !departure.direction) return true;
         return directionsMatch(departure.direction, activeRoute.direction);
       }) ?? [];
@@ -680,43 +1169,39 @@ export const StopSheetPanel = ({
     ) as StationEta[];
     const mapped = etaCandidates.map((eta) => mapEtaToDeparture(eta, activeRoute));
 
-    const heroDepartureFromDetails = detailed.length > 0 ? detailed[0] : null;
-    const heroDepartureFromEta = mapped[0] ?? null;
-    const hero = heroDepartureFromDetails ?? heroDepartureFromEta;
-
-    const getDepartureKey = (departure: StationDeparture) =>
-      `${departure.routeId}-${departure.direction ?? ""}-${departure.destination ?? ""}-${departure.etaMinutes ?? -1}`;
-
+    const combinedDepartures = [...detailed, ...mapped].sort(compareDepartures);
     const uniqueDepartures: StationDeparture[] = [];
     const seenKeys = new Set<string>();
-    const combinedDepartures = [...detailed, ...mapped];
-    let heroKey: string | null = hero ? getDepartureKey(hero) : null;
 
-    const addDeparture = (departure: StationDeparture) => {
+    const getDepartureKey = (departure: StationDeparture) => {
+      const tripId = (departure as StationDepartureWithTrip).tripId ?? null;
+      if (tripId) return `trip:${tripId}`;
+      const minuteKey = getDepartureMinuteKey(departure);
+      const destination = normalizeDestinationLabel(departure.destination) ?? "";
+      return `${departure.routeId}-${departure.direction ?? ""}-${minuteKey ?? "na"}-${destination}`;
+    };
+
+    combinedDepartures.forEach((departure) => {
       const key = getDepartureKey(departure);
       if (seenKeys.has(key)) return;
       seenKeys.add(key);
       uniqueDepartures.push(departure);
-    };
+    });
 
-    for (const departure of combinedDepartures) {
-      if (heroKey && getDepartureKey(departure) === heroKey) {
-        heroKey = null;
-        continue;
-      }
-      if (uniqueDepartures.length >= 12) break;
-      addDeparture(departure);
-    }
+    const hero = uniqueDepartures[0] ?? null;
+    const upcoming = uniqueDepartures.slice(1, 13);
 
     return {
       heroDeparture: hero,
-      upcomingDepartures: uniqueDepartures.slice(0, 12),
+      upcomingDepartures: upcoming,
     };
   }, [board?.details?.departures, activeRoute]);
   const heroTone = heroDeparture?.status ? statusTone(heroDeparture.status) : null;
   const heroSource = heroDeparture?.source ?? activeRoute?.primaryEta?.source;
   const heroTripId =
     (heroDeparture as StationDepartureWithTrip | null)?.tripId ?? activeRoute?.primaryEta?.tripId ?? null;
+  const heroVehicleId = (heroDeparture as StationDepartureWithTrip | null)?.vehicleId ?? null;
+  const heroCanFollow = Boolean(heroTripId && heroVehicleId);
   const heroEta = heroDeparture?.etaMinutes ?? activeRoute?.primaryEta?.etaMinutes ?? null;
   const heroClock =
     heroDeparture?.predictedTime ??
@@ -772,14 +1257,17 @@ export const StopSheetPanel = ({
   }, [isOpen, handleClose]);
 
   useEffect(() => {
-    if (onBusRoutesChange) {
-      const shapes = busRoutesShapesQuery.data ?? [];
-      console.log('[StopSheet] Notifying parent of bus route shapes:', shapes.length);
-      onBusRoutesChange(shapes);
-    }
-  }, [busRoutesShapesQuery.data, onBusRoutesChange]);
+    if (typeof window === "undefined") return;
+    if (window.localStorage?.getItem("perf-debug") !== "1") return;
+    const start = perfRenderStartRef.current;
+    perfRenderCountRef.current += 1;
+    if (!start) return;
+    requestAnimationFrame(() => {
+      void (performance.now() - start);
+    });
+  });
 
-  const stopName = board?.primary.stopName ?? stopId;
+  const stopName = board?.primary.stopName ?? stopNameProp ?? stopId;
   const primaryStopId = board?.primary.stopId ?? stopId;
   const landmarkImage = useMemo(
     () => getLandmarkImage({ stopName, stopId: primaryStopId }),
@@ -788,6 +1276,12 @@ export const StopSheetPanel = ({
 
   const mobileSheetRef = useRef<HTMLElement | null>(null);
   const desktopSheetRef = useRef<HTMLElement | null>(null);
+  const mobileScrollRef = useRef<HTMLDivElement | null>(null);
+  const desktopScrollRef = useRef<HTMLDivElement | null>(null);
+  const departuresSectionRef = useRef<HTMLDivElement | null>(null);
+  const alertsSectionRef = useRef<HTMLDivElement | null>(null);
+  const facilitiesSectionRef = useRef<HTMLDivElement | null>(null);
+  const [activeSheetTab, setActiveSheetTab] = useState<"departures" | "alerts" | "facilities">("departures");
   const mobileSheetHeightValue = mobileSheetHeight ?? MOBILE_SHEET_DEFAULT_HEIGHT;
   const overlayHeightValue = overlayHeight ?? mobileSheetHeightValue;
 
@@ -825,6 +1319,16 @@ export const StopSheetPanel = ({
     return () => document.removeEventListener("pointerdown", handleOutsideClick);
   }, [safeAllowRefs, isOpen, mapPanelRef, onClose]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    setActiveSheetTab("departures");
+    const scrollNode = mobileScrollRef.current ?? desktopScrollRef.current;
+    if (!scrollNode) return;
+    requestAnimationFrame(() => {
+      scrollNode.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+    });
+  }, [isOpen, stopId]);
+
   if (!isOpen) {
     return null;
   }
@@ -837,10 +1341,27 @@ export const StopSheetPanel = ({
 
   const renderSheet = (variant: "mobile" | "desktop") => {
     const sheetRef = variant === "mobile" ? mobileSheetRef : desktopSheetRef;
+    const scrollRef = variant === "mobile" ? mobileScrollRef : desktopScrollRef;
     const sheetStyle =
       variant === "mobile"
-        ? { height: mobileSheetHeightValue, "--stop-sheet-mobile-height": mobileSheetHeightValue }
+        ? {
+            height: mobileSheetHeightValue,
+            maxHeight: mobileSheetHeightValue,
+            "--stop-sheet-mobile-height": mobileSheetHeightValue,
+          }
         : undefined;
+    const showTabs = variant === "mobile";
+    const scrollToSection = (section: "departures" | "alerts" | "facilities") => {
+      setActiveSheetTab(section);
+      const target =
+        section === "departures"
+          ? departuresSectionRef.current
+          : section === "alerts"
+            ? alertsSectionRef.current
+            : facilitiesSectionRef.current;
+      if (!target) return;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
     return (
       <section
         className={`stop-sheet-panel flex h-full w-full flex-col overflow-hidden bg-[color:var(--card)] text-[color:var(--foreground)] shadow-2xl ${
@@ -853,7 +1374,9 @@ export const StopSheetPanel = ({
         style={sheetStyle as CSSProperties | undefined}
       >
       <header
-        className={`sticky top-0 z-10 overflow-hidden border-b px-6 py-5 ${variant === "desktop" ? "rounded-tr-3xl" : "rounded-t-3xl"}`}
+        className={`stop-sheet-header sticky top-0 z-10 overflow-hidden border-b px-6 py-5 ${
+          variant === "desktop" ? "rounded-tr-3xl" : "rounded-t-3xl"
+        }`}
         style={{ borderColor: headerHue.borderColor, background: headerHue.background }}
       >
         {landmarkImage && (
@@ -900,9 +1423,10 @@ export const StopSheetPanel = ({
             </div>
             <button
               type="button"
-              className="touch-target flex h-10 w-10 items-center justify-center rounded-full text-lg font-semibold shadow transition hover:scale-110"
+              className="touch-target flex h-10 w-10 items-center justify-center rounded-full text-lg font-semibold shadow transition"
               onClick={handleClose}
               aria-label="Close stop sheet"
+              data-interactive="icon"
               style={{
                 background: closeButtonBg,
                 color: closeButtonColor,
@@ -934,33 +1458,25 @@ export const StopSheetPanel = ({
               </div>
               {routeDirectionOptions.length > 0 && (
                 <>
-                  {collapseEnabled ? (
-                    areRoutesExpanded || !activeDirectionOption ? (
-                      <div className={routeListGridClass}>
-                        {routeDirectionOptions.map((option) => routeOptionButton(option))}
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-3">
-                        {routeOptionButton(activeDirectionOption)}
-                        <button
-                          type="button"
-                          className="btn btn-ghost touch-target rounded-full p-2 text-lg"
-                          onClick={() => setRouteExpansion((prev) => ({ ...prev, [stopId]: true }))}
-                          aria-label="Show all routes at this stop"
-                          style={{
-                            border: "1px solid var(--border)",
-                            color: "var(--foreground)",
-                            background: "var(--surface)",
-                          }}
-                        >
-                          <FiChevronDown />
-                        </button>
-                      </div>
-                    )
-                  ) : (
-                    <div className={routeListGridClass}>
-                      {routeDirectionOptions.map((option) => routeOptionButton(option))}
-                    </div>
+                  <div className={routeListGridClass}>
+                    {displayRouteOptions.map((option) => routeOptionButton(option))}
+                  </div>
+                  {collapseEnabled && !areRoutesExpanded && routeDirectionOptions.length > displayRouteOptions.length && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost mt-2 inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.2em]"
+                      onClick={() => setRouteExpansion((prev) => ({ ...prev, [stopId]: true }))}
+                      aria-label="Show all routes at this stop"
+                      data-interactive="ghost"
+                      style={{
+                        border: "1px solid var(--border)",
+                        color: "var(--foreground)",
+                        background: "var(--surface)",
+                      }}
+                    >
+                      <FiChevronDown />
+                      <span>More routes</span>
+                    </button>
                   )}
                 </>
               )}
@@ -969,12 +1485,74 @@ export const StopSheetPanel = ({
         </div>
       </header>
       <div
+        ref={scrollRef}
         className="stop-sheet-scroll flex-1 overflow-y-auto pb-8 pt-5"
         style={{
           background: "var(--surface-soft)",
           paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 1.5rem)`,
         }}
       >
+        {showTabs && (
+          <div
+            className="sticky top-0 z-20 -mx-6 mb-4 border-b px-6 pb-3 pt-2"
+            style={{
+              borderColor: "color-mix(in srgb, var(--border) 70%, transparent)",
+              background: "color-mix(in srgb, var(--card) 90%, transparent)",
+              backdropFilter: "blur(10px)",
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="rounded-full px-3 py-1 text-xs font-semibold transition"
+                aria-pressed={activeSheetTab === "departures"}
+                onClick={() => scrollToSection("departures")}
+                style={{
+                  background:
+                    activeSheetTab === "departures"
+                      ? "color-mix(in srgb, var(--accent) 22%, transparent)"
+                      : "transparent",
+                  color: "var(--foreground)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                Departures
+              </button>
+              <button
+                type="button"
+                className="rounded-full px-3 py-1 text-xs font-semibold transition"
+                aria-pressed={activeSheetTab === "alerts"}
+                onClick={() => scrollToSection("alerts")}
+                style={{
+                  background:
+                    activeSheetTab === "alerts"
+                      ? "color-mix(in srgb, var(--accent) 22%, transparent)"
+                      : "transparent",
+                  color: "var(--foreground)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                Alerts
+              </button>
+              <button
+                type="button"
+                className="rounded-full px-3 py-1 text-xs font-semibold transition"
+                aria-pressed={activeSheetTab === "facilities"}
+                onClick={() => scrollToSection("facilities")}
+                style={{
+                  background:
+                    activeSheetTab === "facilities"
+                      ? "color-mix(in srgb, var(--accent) 22%, transparent)"
+                      : "transparent",
+                  color: "var(--foreground)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                Facilities
+              </button>
+            </div>
+          </div>
+        )}
         {boardQuery.isLoading && <div className="px-6"><LoadingSkeleton /></div>}
         {boardQuery.isError && (
           <div className="px-6">
@@ -995,7 +1573,7 @@ export const StopSheetPanel = ({
         )}
         {!boardQuery.isLoading && board && (
           <div className="space-y-8 px-6">
-            <div>
+            <div id="stop-sheet-departures" ref={departuresSectionRef} style={{ scrollMarginTop: "96px" }}>
               <p className="text-xs uppercase tracking-[0.35em] mb-3" style={{ color: "var(--muted)" }}>
                 Next departure
               </p>
@@ -1005,11 +1583,18 @@ export const StopSheetPanel = ({
                 <div className="panel shadow-inner" style={{ background: heroHue.background, borderColor: heroHue.borderColor }}>
                   <button
                     type="button"
-                    className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 text-left transition hover:bg-[var(--surface)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"
-                    onClick={() => heroTripId && onFollowTrip(heroTripId)}
-                    disabled={!heroTripId}
-                    aria-disabled={!heroTripId}
-                    title={heroTripId ? "Follow this trip on the map" : "Trip tracking not available"}
+                    className="group grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"
+                    onClick={() => heroCanFollow && !followLoading && onFollowTrip(heroTripId)}
+                    disabled={!heroCanFollow || followLoading}
+                    aria-disabled={!heroCanFollow || followLoading}
+                    title={
+                      !heroTripId
+                        ? "Trip tracking not available"
+                        : !heroVehicleId
+                          ? "Live vehicle tracking unavailable for this trip"
+                          : "Follow this trip on the map"
+                    }
+                    data-interactive="ghost"
                     style={{ color: "var(--foreground)", background: "transparent" }}
                   >
                     <div>
@@ -1040,19 +1625,32 @@ export const StopSheetPanel = ({
                           </p>
                         </div>
                       </div>
-                      {heroTripId ? (
-                        <div className="btn btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-sm transition group-hover:scale-105" style={{ position: "relative" }}>
+                      {heroCanFollow ? (
+                        <div
+                          className="btn btn-primary inline-flex items-center gap-1.5 px-3 py-1.5 text-sm transition"
+                          style={{ position: "relative", opacity: followLoading ? 0.75 : 1 }}
+                        >
                           <FiArrowRightCircle className="text-base" />
-                          <span>Follow</span>
+                          <span>{followLoading ? "Checking…" : "Follow"}</span>
                           <span className="inline-flex ml-0.5" onClick={(e) => e.stopPropagation()}>
                             <InfoTooltip content="Track this vehicle in real-time on the map" />
                           </span>
                         </div>
                       ) : (
-                        <span className="text-xs" style={{ color: "var(--muted)" }}>Not trackable</span>
+                        <span className="inline-flex items-center gap-1 text-xs" style={{ color: "var(--muted)" }}>
+                          Live tracking unavailable
+                          <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
+                            <InfoTooltip content="MBTA real-time data doesn't include a vehicle for this trip yet." />
+                          </span>
+                        </span>
                       )}
                     </div>
                   </button>
+                  {followError && (
+                    <div className="mt-2 rounded-lg border px-3 py-2 text-xs" style={{ borderColor: "rgba(244,63,94,0.35)", color: "#fecdd3", background: "rgba(244,63,94,0.12)" }}>
+                      {followError}
+                    </div>
+                  )}
                 </div>
               ) : shouldShowNoMoreDepartures ? (
                 <div className="panel" style={{ background: heroHue.background, borderColor: heroHue.borderColor }}>
@@ -1077,18 +1675,18 @@ export const StopSheetPanel = ({
                 )}
               </div>
             </div>
-            {board.details && (
+            {(boardQuery.isLoading || board?.details) && (
               <div className="space-y-6">
-                <div>
+                <div id="stop-sheet-alerts" ref={alertsSectionRef} style={{ scrollMarginTop: "96px" }}>
                   <p className="heading-label text-slate-400">Alerts</p>
                   <div className="mt-3">
-                    <AlertList alerts={board.details.alerts} />
+                    <AlertList alerts={details.alerts} isLoading={boardQuery.isLoading} />
                   </div>
                 </div>
-                <div>
+                <div id="stop-sheet-facilities" ref={facilitiesSectionRef} style={{ scrollMarginTop: "96px" }}>
                   <p className="heading-label text-slate-400">Facilities</p>
                   <div className="mt-3">
-                    <FacilitiesList facilities={board.details.facilities} />
+                    <FacilitiesList facilities={details.facilities} isLoading={boardQuery.isLoading} />
                   </div>
                 </div>
               </div>

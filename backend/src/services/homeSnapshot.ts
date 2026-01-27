@@ -1,14 +1,25 @@
+// Builds the map home response by blending nearby stops with live ETAs.
 import type { MbtaCache } from "../cache/mbtaCache";
 import type { MbtaClient } from "../mbta/client";
-import type { MbtaRoute, MbtaStop } from "../models/mbta";
+import type { MbtaRoute, MbtaStop, RouteType } from "../models/mbta";
 import { haversineDistanceMeters } from "../utils/geo";
 import { mapRouteTypeToMode } from "../utils/routeMode";
 import type { HomeResponse, HomeStopSummary, HomeRouteSummary, Mode } from "@linelight/core";
 import { getCachedStopEtaSnapshot, getStopEtaSnapshot } from "./etaService";
-import type { BlendedDeparture } from "./etaBlender";
+import { fetchBlendedDeparturesForStops, type BlendedDeparture } from "./etaBlender";
 import { extractFirstRelationshipId } from "../utils/jsonApi";
 import { isBoardableKind, resolveStationKind } from "../utils/stationKind";
 import { logger } from "../utils/logger";
+import {
+  getRoutesCachedLight,
+  getStopsCachedLight,
+  getStopRoutesCachedLight,
+  type DbRoute,
+  type DbStop,
+} from "../db";
+import { createTimings } from "../utils/timing";
+import { directionIdToLabel } from "../utils/directions";
+import { normalizeLabel } from "../utils/text";
 
 interface BuildHomeOptions {
   lat: number;
@@ -32,8 +43,10 @@ type StopTarget = {
 
 const HOME_CACHE_COORD_PRECISION = 0.01; // ~1.1km
 const HOME_CACHE_RADIUS_INCREMENT = 250;
-const MAX_UNIQUE_STOP_TARGETS = 32;
+const MAX_UNIQUE_STOP_TARGETS = 20;
 const STOP_SNAPSHOT_CONCURRENCY = 4;
+const HOME_SNAPSHOT_TIMEOUT_MS = Number(process.env.HOME_SNAPSHOT_TIMEOUT_MS ?? "1500");
+const HOME_SNAPSHOT_CONCURRENCY = Number(process.env.HOME_SNAPSHOT_CONCURRENCY ?? String(STOP_SNAPSHOT_CONCURRENCY));
 const SUGGESTED_STATION_IDS = [
   "place-pktrm", // Park Street
   "place-gover", // Government Center
@@ -66,12 +79,6 @@ const buildHomeCacheKey = (options: BuildHomeOptions) => {
   return `${latBucket}:${lngBucket}:r${radiusBucket}:l${limitBucket}:f${favoritesKey}`;
 };
 
-const normalizeLabel = (value?: string | null): string | null => {
-  if (!value) return null;
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? null : trimmed;
-};
-
 const groupDeparturesByRoute = (departures: BlendedDeparture[]): HomeRouteSummary[] => {
   const groups = new Map<string, BlendedDeparture[]>();
 
@@ -94,8 +101,7 @@ const groupDeparturesByRoute = (departures: BlendedDeparture[]): HomeRouteSummar
         nextTimes: [],
       };
     }
-    const directionLabel =
-      primary.directionId === 0 ? "Inbound" : primary.directionId === 1 ? "Outbound" : "Unknown";
+    const directionLabel = directionIdToLabel(primary.directionId);
     const primaryHeadsign = normalizeLabel(primary.headsign);
     const alternateHeadsign = group
       .map((item) => normalizeLabel(item.headsign))
@@ -253,15 +259,38 @@ const toHomeStopSummary = (
   departures: BlendedDeparture[],
   routeModes: Map<string, Mode>,
   platformStopIds: string[],
+  dbStopRoutes?: Map<string, Set<string>>,
 ): HomeStopSummary => {
   const routes = groupDeparturesByRoute(departures);
-  const modes = Array.from(
-    new Set(
-      routes
-        .map((route) => (route.routeId ? routeModes.get(route.routeId) : undefined))
-        .filter((mode): mode is Mode => Boolean(mode)),
-    ),
+  
+  // Collect modes from departures
+  const modesFromDepartures = new Set(
+    routes
+      .map((route) => (route.routeId ? routeModes.get(route.routeId) : undefined))
+      .filter((mode): mode is Mode => Boolean(mode)),
   );
+
+  // Also add modes from database for stops that have routes in DB
+  if (dbStopRoutes) {
+    const dbModesForStop = new Set<Mode>();
+    platformStopIds.forEach((platformId) => {
+      const routeIds = dbStopRoutes.get(platformId);
+      if (routeIds && routeIds.size > 0) {
+        routeIds.forEach((routeId) => {
+          const mode = routeModes.get(routeId);
+          if (mode) {
+            dbModesForStop.add(mode);
+            modesFromDepartures.add(mode);
+          }
+        });
+      }
+    });
+    if (stop.id === "place-north" && dbModesForStop.size > 0) {
+      logger.debug("North Station DB modes", { platformStopIds, dbModes: Array.from(dbModesForStop) });
+    }
+  }
+
+  const modes = Array.from(modesFromDepartures);
 
   return {
     stopId: stop.id,
@@ -375,21 +404,40 @@ const buildSuggestedNearbyGroups = (
 
 type StopSnapshotFetcher = typeof getStopEtaSnapshot;
 
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
 const fetchStopSnapshots = async (
   cache: MbtaCache,
   client: MbtaClient,
   targets: StopTarget[],
   fetchStopSnapshot: StopSnapshotFetcher,
+  prefetchedSnapshots?: Map<string, BlendedDeparture[]>,
 ): Promise<Array<{ stop: MbtaStop; snapshot: BlendedDeparture[] | null }>> => {
   if (targets.length === 0) return [];
   const queue = targets.slice();
   const results: Array<{ stop: MbtaStop; snapshot: BlendedDeparture[] | null }> = [];
+  const prefetched = prefetchedSnapshots ?? new Map<string, BlendedDeparture[]>();
 
   const worker = async () => {
     while (queue.length > 0) {
       const target = queue.shift();
       if (!target) break;
       const { stop } = target;
+      const prefetchedSnapshot = prefetched.get(stop.id);
+      if (prefetchedSnapshot !== undefined) {
+        results.push({ stop, snapshot: prefetchedSnapshot });
+        continue;
+      }
       const cachedSnapshot = getCachedStopEtaSnapshot(cache, stop.id, {
         maxLookaheadMinutes: 30,
         minLookaheadMinutes: -2,
@@ -399,11 +447,18 @@ const fetchStopSnapshots = async (
         results.push({ stop, snapshot: cachedSnapshot.departures });
         continue;
       }
+      if (!target.isFavorite) {
+        results.push({ stop, snapshot: null });
+        continue;
+      }
       try {
-        const snapshot = await fetchStopSnapshot(client, stop.id, {
-          maxLookaheadMinutes: 30,
-          minLookaheadMinutes: -2,
-        });
+        const snapshot = await withTimeout(
+          fetchStopSnapshot(client, stop.id, {
+            maxLookaheadMinutes: 30,
+            minLookaheadMinutes: -2,
+          }),
+          HOME_SNAPSHOT_TIMEOUT_MS,
+        );
         results.push({ stop, snapshot: snapshot.departures });
       } catch (error) {
         logger.error("Failed to fetch stop snapshot for home view", {
@@ -415,7 +470,10 @@ const fetchStopSnapshots = async (
     }
   };
 
-  const workerCount = Math.min(STOP_SNAPSHOT_CONCURRENCY, targets.length);
+  const workerCount = Math.min(
+    Math.max(1, Number.isFinite(HOME_SNAPSHOT_CONCURRENCY) ? HOME_SNAPSHOT_CONCURRENCY : STOP_SNAPSHOT_CONCURRENCY),
+    targets.length,
+  );
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return results;
 };
@@ -426,9 +484,12 @@ export const buildHomeSnapshot = async (
   options: BuildHomeOptions,
   deps?: { fetchStopSnapshot?: StopSnapshotFetcher },
 ): Promise<HomeResponse> => {
+  logger.debug("buildHomeSnapshot called", { lat: options.lat, lng: options.lng });
+  const timing = createTimings();
   const cacheKey = buildHomeCacheKey(options);
   const cached = await cache.getHomeSnapshot(cacheKey);
   if (cached) {
+    logger.debug("Home snapshot cache hit", { durationMs: timing.totalMs() });
     return cached;
   }
 
@@ -436,8 +497,72 @@ export const buildHomeSnapshot = async (
   const stopsEntry = cache.getStops();
   const routesEntry = cache.getRoutes();
 
-  const routeModes = buildRouteModeLookup(routesEntry?.data);
-  const allStops = stopsEntry?.data ?? [];
+  const dbStops = getStopsCachedLight().catch((error) => {
+    logger.warn("DB stops unavailable, falling back to cache", { message: String(error) });
+    return [] as DbStop[];
+  });
+
+  const dbRoutes = getRoutesCachedLight().catch((error) => {
+    logger.warn("DB routes unavailable, falling back to cache", { message: String(error) });
+    return [] as DbRoute[];
+  });
+
+  const dbStopRoutes = getStopRoutesCachedLight().catch((error) => {
+    logger.warn("DB stop_routes unavailable, falling back to cache", { message: String(error) });
+    return new Map<string, Set<string>>();
+  });
+
+  const dbStopsResolved = await dbStops;
+  const dbRoutesResolved = await dbRoutes;
+  const dbStopRoutesResolved = await dbStopRoutes;
+  timing.mark("dbLoad");
+
+  logger.debug("DB data loaded", { dbStopsCount: dbStopsResolved.length, dbRoutesCount: dbRoutesResolved.length, dbStopRoutesSize: dbStopRoutesResolved.size });
+
+  const useDb = dbStopsResolved.length > 0 && dbRoutesResolved.length > 0 && dbStopRoutesResolved.size > 0;
+  logger.debug("useDb decision", { useDb });
+  
+  const buildDbStop = (stop: DbStop): MbtaStop => {
+    const relationships = stop.parentStationId
+      ? { parent_station: { data: { id: stop.parentStationId, type: "stop" } } }
+      : null;
+    return {
+      id: stop.id,
+      type: "stop",
+      attributes: {
+        name: stop.name,
+        description: null,
+        latitude: stop.lat,
+        longitude: stop.lon,
+        wheelchair_boarding: stop.wheelchairBoarding ?? null,
+        location_type: stop.locationType ?? (stop.parentStationId ? 0 : 1),
+      },
+      ...(relationships ? { relationships } : {}),
+    };
+  };
+
+  const allStops = useDb ? dbStopsResolved.map(buildDbStop) : stopsEntry?.data ?? [];
+  const routeModes = useDb
+    ? new Map(dbRoutesResolved.map((route) => [route.id, mapRouteTypeToMode(route.type as RouteType)]))
+    : buildRouteModeLookup(routesEntry?.data);
+
+  const crRoutesInMap = Array.from(routeModes.entries()).filter(([id]) => id.startsWith("CR-"));
+  logger.debug("routeModes compiled", { totalRoutes: routeModes.size, crRoutes: crRoutesInMap.length, crSample: crRoutesInMap.slice(0, 3).map(([id, mode]) => ({ id, mode })) });
+
+  if (allStops.length === 0 || routeModes.size === 0) {
+    const response: HomeResponse = {
+      favorites: [],
+      nearby: [],
+      generatedAt: new Date().toISOString(),
+    };
+    await cache.setHomeSnapshot(cacheKey, response);
+    logger.warn("Home snapshot empty, missing stop or route data", {
+      stopsCount: allStops.length,
+      routesCount: routeModes.size,
+      useDb,
+    });
+    return response;
+  }
   const stopLookup = new Map<string, MbtaStop>();
   allStops.forEach((stop) => stopLookup.set(stop.id, stop));
   const stationChildrenMap = buildStationChildrenMap(allStops);
@@ -448,8 +573,9 @@ export const buildHomeSnapshot = async (
     options.lng,
     options.radiusMeters,
     options.limit * 4,
-    cache.getStopRouteMap()?.data,
+    useDb ? dbStopRoutesResolved : cache.getStopRouteMap()?.data,
   );
+  timing.mark("nearbyStops");
 
   const nearbyGroupsMap = buildGroupsFromEntries(nearbyStops, stopLookup, stationChildrenMap);
   const orderedNearbyGroups = Array.from(nearbyGroupsMap.values()).sort(
@@ -462,7 +588,7 @@ export const buildHomeSnapshot = async (
       options,
       stopLookup,
       stationChildrenMap,
-      cache.getStopRouteMap()?.data,
+      useDb ? dbStopRoutesResolved : cache.getStopRouteMap()?.data,
     );
   }
 
@@ -517,7 +643,30 @@ export const buildHomeSnapshot = async (
   const maxTargets = Math.max(MAX_UNIQUE_STOP_TARGETS, favoriteTargets.length);
   const limitedTargets = [...favoriteTargets, ...nonFavoriteTargets].slice(0, maxTargets);
 
-  const etaSnapshots = await fetchStopSnapshots(cache, client, limitedTargets, fetchStopSnapshot);
+  let prefetchedSnapshots = new Map<string, BlendedDeparture[]>();
+  if (favoriteTargets.length > 0) {
+    try {
+      prefetchedSnapshots = await fetchBlendedDeparturesForStops(
+        client,
+        favoriteTargets.map((entry) => entry.stop.id),
+        {
+          maxLookaheadMinutes: 30,
+          minLookaheadMinutes: -2,
+        },
+      );
+    } catch (error) {
+      logger.warn("Failed to batch fetch favorite stop snapshots", { message: String(error) });
+    }
+  }
+
+  const etaSnapshots = await fetchStopSnapshots(
+    cache,
+    client,
+    limitedTargets,
+    fetchStopSnapshot,
+    prefetchedSnapshots,
+  );
+  timing.mark("etaFetch");
 
   const snapshotMap = new Map<string, BlendedDeparture[]>();
   etaSnapshots.forEach(({ stop, snapshot }) => {
@@ -526,16 +675,33 @@ export const buildHomeSnapshot = async (
     }
   });
 
-  const summarizeGroup = (group: StationGroup): HomeStopSummary =>
-    toHomeStopSummary(
+  const summarizeGroup = (group: StationGroup): HomeStopSummary => {
+    if (group.stationStop.id === "place-north") {
+      logger.debug("North Station group", { platformStopIds: Array.from(group.platformStopIds).slice(0, 5), totalPlatformStops: group.platformStopIds.size });
+    }
+    return toHomeStopSummary(
       group.stationStop,
       group.minDistance,
       aggregateDeparturesForGroup(group, snapshotMap),
       routeModes,
       Array.from(group.platformStopIds),
+      useDb ? dbStopRoutesResolved : cache.getStopRouteMap()?.data,
     );
+  };
 
-  const nearbySummaries: HomeStopSummary[] = limitedNearbyGroups.map(summarizeGroup);
+  const nearbySummaries: HomeStopSummary[] = limitedNearbyGroups
+    .map((group) => ({ group, departures: aggregateDeparturesForGroup(group, snapshotMap) }))
+    .filter(({ departures }) => departures.length > 0)
+    .map(({ group, departures }) =>
+      toHomeStopSummary(
+        group.stationStop,
+        group.minDistance,
+        departures,
+        routeModes,
+        Array.from(group.platformStopIds),
+        useDb ? dbStopRoutesResolved : cache.getStopRouteMap()?.data,
+      ),
+    );
 
   const favoriteSummaryMap = new Map<string, HomeStopSummary>();
   favoriteGroupsMap.forEach((group, stationId) => {
@@ -562,8 +728,17 @@ export const buildHomeSnapshot = async (
     nearby: nearbySummaries,
     generatedAt: new Date().toISOString(),
   };
+  timing.mark("responseBuilt");
 
   await cache.setHomeSnapshot(cacheKey, response);
+  logger.debug("Home snapshot timing", {
+    useDb,
+    totalMs: timing.totalMs(),
+    dbLoadMs: timing.marks.dbLoad,
+    nearbyStopsMs: timing.marks.nearbyStops,
+    etaFetchMs: timing.marks.etaFetch,
+    responseMs: timing.marks.responseBuilt,
+  });
 
   return response;
 };

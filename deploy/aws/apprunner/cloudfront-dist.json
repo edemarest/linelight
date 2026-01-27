@@ -1,0 +1,59 @@
+{
+  "CallerReference": "1768124198",
+  "Comment": "linelight-web",
+  "Enabled": true,
+  "Origins": {
+    "Quantity": 1,
+    "Items": [
+      {
+        "Id": "linelight-web-s3",
+        "DomainName": "linelight-web-123456789012.s3-website-us-east-1.amazonaws.com",
+        "CustomOriginConfig": {
+          "HTTPPort": 80,
+          "HTTPSPort": 443,
+          "OriginProtocolPolicy": "http-only",
+          "OriginSslProtocols": {
+            "Quantity": 1,
+            "Items": ["TLSv1.2"]
+          }
+        }
+      }
+    ]
+  },
+  "DefaultCacheBehavior": {
+    "TargetOriginId": "linelight-web-s3",
+    "ViewerProtocolPolicy": "redirect-to-https",
+    "AllowedMethods": {
+      "Quantity": 2,
+      "Items": ["GET", "HEAD"],
+      "CachedMethods": {
+        "Quantity": 2,
+        "Items": ["GET", "HEAD"]
+      }
+    },
+    "Compress": true,
+    "ForwardedValues": {
+      "QueryString": false,
+      "Cookies": {"Forward": "none"}
+    },
+    "MinTTL": 0
+  },
+  "DefaultRootObject": "index.html",
+  "CustomErrorResponses": {
+    "Quantity": 2,
+    "Items": [
+      {
+        "ErrorCode": 403,
+        "ResponsePagePath": "/index.html",
+        "ResponseCode": "200",
+        "ErrorCachingMinTTL": 0
+      },
+      {
+        "ErrorCode": 404,
+        "ResponsePagePath": "/index.html",
+        "ResponseCode": "200",
+        "ErrorCachingMinTTL": 0
+      }
+    ]
+  }
+}

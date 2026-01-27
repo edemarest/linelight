@@ -23,10 +23,22 @@ export const isBoardableKind = (kind: StationKind): boolean => kind === "station
 
 export const resolveBoardableParent = (stop: MbtaStop, stopMap: Map<string, MbtaStop>): MbtaStop | null => {
   const kind = resolveStationKind(stop);
+  const parentId = extractFirstRelationshipId(stop.relationships?.parent_station) ?? null;
+
+  if (kind === "platform" && parentId) {
+    const parentStop = stopMap.get(parentId);
+    if (parentStop) {
+      const parentKind = resolveStationKind(parentStop);
+      if (parentKind === "station") {
+        return parentStop;
+      }
+    }
+  }
+
   if (isBoardableKind(kind)) {
     return stop;
   }
-  const parentId = extractFirstRelationshipId(stop.relationships?.parent_station) ?? null;
+
   if (!parentId) {
     return null;
   }

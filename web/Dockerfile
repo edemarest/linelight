@@ -8,6 +8,7 @@ ARG NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
 ENV NODE_OPTIONS=--max-old-space-size=450
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV TURBOPACK_ROOT=/app/web
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY web/package.json web/package-lock.json ./web/
@@ -16,18 +17,27 @@ RUN npm config set fetch-retries 5 \
 	&& npm config set fetch-retry-factor 10 \
 	&& npm config set fetch-retry-mintimeout 20000 \
 	&& npm config set fetch-retry-maxtimeout 120000 \
-	&& npm install --workspaces --include-workspace-root --prefer-offline --no-audit --no-fund --unsafe-perm
+	&& npm config set fetch-timeout 300000 \
+	&& npm config set maxsockets 1 \
+	&& npm config set prefer-offline true \
+	&& npm ci --workspaces --include-workspace-root --no-audit --no-fund --unsafe-perm
 
 # Ensure the correct lightningcss native binary package is present for the
 # build platform (Tailwind v4 / @tailwindcss/postcss depends on this).
 RUN node - <<'NODE'
 const { execSync } = require('child_process');
 
-const { MUSL, familySync } = require('/app/web/node_modules/detect-libc');
+let MUSL = 'MUSL';
+let familySync = null;
+try {
+  ({ MUSL, familySync } = require('/app/web/node_modules/detect-libc'));
+} catch {
+  familySync = null;
+}
 
 let parts = [process.platform, process.arch];
 if (process.platform === 'linux') {
-	const family = familySync();
+	const family = familySync ? familySync() : null;
 	if (family === MUSL) parts.push('musl');
 	else if (process.arch === 'arm') parts.push('gnueabihf');
 	else parts.push('gnu');
@@ -38,10 +48,20 @@ if (process.platform === 'linux') {
 const suffix = parts.join('-');
 
 const lightningPkg = `lightningcss-${suffix}`;
-const lightningVersion = require('/app/web/node_modules/lightningcss/package.json').version;
+let lightningVersion = null;
+try {
+	lightningVersion = require('/app/web/node_modules/lightningcss/package.json').version;
+} catch {
+	lightningVersion = require('/app/node_modules/lightningcss/package.json').version;
+}
 
 const oxidePkg = `@tailwindcss/oxide-${suffix}`;
-const oxideVersion = require('/app/web/node_modules/@tailwindcss/oxide/package.json').version;
+let oxideVersion = null;
+try {
+	oxideVersion = require('/app/web/node_modules/@tailwindcss/oxide/package.json').version;
+} catch {
+	oxideVersion = require('/app/node_modules/@tailwindcss/oxide/package.json').version;
+}
 
 console.log(`Ensuring ${lightningPkg}@${lightningVersion}`);
 console.log(`Ensuring ${oxidePkg}@${oxideVersion}`);
@@ -60,6 +80,7 @@ ARG NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
 ENV NODE_OPTIONS=--max-old-space-size=450
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV TURBOPACK_ROOT=/app/web
 WORKDIR /app
 COPY web ./web
 COPY packages ./packages
@@ -80,16 +101,6 @@ ENV NODE_ENV=production
 ARG NEXT_PUBLIC_API_BASE_URL
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:4000}
 EXPOSE 3000
-COPY --from=builder /app/web/.next/standalone ./
-COPY --from=builder /app/web/.next/static ./.next/static
-COPY --from=builder /app/web/public ./public
-# In a monorepo, Next standalone output may preserve the app folder name
-# (e.g. place server.js under ./web/server.js). In that case, the server
-# will look for assets under ./web/.next/static and ./web/public.
-RUN if [ -d "./web" ]; then \
-			mkdir -p ./web/.next && \
-			rm -rf ./web/.next/static ./web/public && \
-			cp -R ./.next/static ./web/.next/static && \
-			cp -R ./public ./web/public; \
-		fi
-CMD ["sh", "-c", "export PORT=${PORT:-3000} HOSTNAME=0.0.0.0; if [ -f server.js ]; then node server.js; elif [ -f web/server.js ]; then node web/server.js; else echo 'Error: server.js not found' >&2; exit 1; fi"]
+RUN npm install -g serve
+COPY --from=builder /app/web/out ./out
+CMD ["sh", "-c", "export PORT=${PORT:-3000} HOSTNAME=0.0.0.0; serve -s out -l ${PORT}"]

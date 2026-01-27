@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+// Lines page: overview of line health plus geometry previews.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -106,6 +107,7 @@ const segmentHealthIcon = (health: SegmentHealth) => {
 
 export const LinesShell = () => {
   const searchParams = useSearchParams();
+  const perfRenderCountRef = useRef(0);
   const mapRef = useRef<MapRef | null>(null);
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null);
   const [viewState, setViewState] = useState<ViewState>({
@@ -116,6 +118,8 @@ export const LinesShell = () => {
     pitch: 0,
     padding: { top: 0, right: 0, bottom: 0, left: 0 },
   });
+  const [mapReady, setMapReady] = useState(false);
+  const [deckGlReady, setDeckGlReady] = useState(false);
 
   const linesQuery = useQuery({
     queryKey: ["lines"],
@@ -162,6 +166,63 @@ export const LinesShell = () => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedLineId(normalized);
   }, [searchParams]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.localStorage?.getItem("perf-debug") !== "1") return;
+    perfRenderCountRef.current += 1;
+    const start = performance.now();
+    requestAnimationFrame(() => {
+      // perf marker intentionally silent in production
+      void (performance.now() - start);
+    });
+  });
+
+  useEffect(() => {
+    let raf: number | null = null;
+    if (!mapReady) {
+      raf = requestAnimationFrame(() => setDeckGlReady(false));
+      return () => {
+        if (raf != null) {
+          cancelAnimationFrame(raf);
+        }
+      };
+    }
+    try {
+      const map = mapRef.current && typeof mapRef.current.getMap === "function" ? mapRef.current.getMap() : null;
+      const mapCanvas = map && typeof map.getCanvas === "function" ? map.getCanvas() : null;
+      const canvas = mapCanvas ?? (typeof document !== "undefined" ? document.createElement("canvas") : null);
+      const gl = canvas?.getContext && (canvas.getContext("webgl2") || canvas.getContext("webgl"));
+      raf = requestAnimationFrame(() => setDeckGlReady(Boolean(gl)));
+    } catch {
+      raf = requestAnimationFrame(() => setDeckGlReady(false));
+    }
+    return () => {
+      if (raf != null) {
+        cancelAnimationFrame(raf);
+      }
+    };
+  }, [mapReady]);
+
+  const safeFitBounds = useCallback((bounds: [[number, number], [number, number]]) => {
+    const map = mapRef.current?.getMap?.();
+    if (!map) return;
+    const canvas = map.getCanvas?.();
+    if (!canvas || canvas.clientWidth < 20 || canvas.clientHeight < 20) return;
+    const maxX = Math.max(0, Math.floor((canvas.clientWidth - 40) / 2));
+    const maxY = Math.max(0, Math.floor((canvas.clientHeight - 40) / 2));
+    const padding = {
+      top: Math.min(80, maxY),
+      bottom: Math.min(80, maxY),
+      left: Math.min(80, maxX),
+      right: Math.min(80, maxX),
+    };
+    try {
+      map.fitBounds(bounds, { padding, duration: 800 });
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const stopNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -271,8 +332,7 @@ export const LinesShell = () => {
 
   useEffect(() => {
     const shapes = lineShapesQuery.data?.shapes;
-    const map = mapRef.current?.getMap?.();
-    if (!map || !shapes || shapes.length === 0) return;
+    if (!shapes || shapes.length === 0) return;
     const points = shapes.flat().filter((coord) => Number.isFinite(coord.lat) && Number.isFinite(coord.lng));
     if (points.length === 0) return;
     const lats = points.map((p) => p.lat);
@@ -281,12 +341,8 @@ export const LinesShell = () => {
       [Math.min(...lngs), Math.min(...lats)],
       [Math.max(...lngs), Math.max(...lats)],
     ];
-    try {
-      map.fitBounds(bounds, { padding: 80, duration: 800 });
-    } catch {
-      // ignore fit errors
-    }
-  }, [lineShapesQuery.data, selectedLineId]);
+    safeFitBounds(bounds);
+  }, [lineShapesQuery.data, selectedLineId, safeFitBounds]);
 
   const selectedLine = useMemo(
     () => (selectedLineId ? lines.find((line) => line.lineId === selectedLineId) ?? null : null),
@@ -308,7 +364,11 @@ export const LinesShell = () => {
             </p>
           </div>
           {selectedLineId && (
-            <Link href={`/?line=${encodeURIComponent(selectedLineId)}`} className="text-sm text-(--accent) underline">
+            <Link
+              href={`/?line=${encodeURIComponent(selectedLineId)}`}
+              className="text-sm text-(--accent) underline"
+              data-interactive="ghost"
+            >
               Open on map
             </Link>
           )}
@@ -342,9 +402,7 @@ export const LinesShell = () => {
                 type="button"
                 onClick={() => setSelectedLineId(line.lineId)}
                 className={`rounded-2xl border px-3 py-2 text-left text-sm transition ${
-                  selectedLineId === line.lineId
-                    ? "border-white/40 bg-white/10"
-                    : "border-white/5 bg-black/20 hover:border-white/20"
+                  selectedLineId === line.lineId ? "border-white/40 bg-white/10" : "border-white/5 bg-black/20"
                 }`}
                 style={{
                   borderColor: selectedLineId === line.lineId ? "var(--accent)" : "var(--border)",
@@ -352,6 +410,7 @@ export const LinesShell = () => {
                     selectedLineId === line.lineId ? "var(--accent-soft)" : "color-mix(in srgb, var(--surface) 85%, transparent)",
                   color: "var(--foreground)",
                 }}
+                data-interactive="ghost"
               >
                 <p className="font-semibold">{line.displayName}</p>
                 <p className="text-xs" style={{ color: "var(--muted)" }}>
@@ -389,23 +448,27 @@ export const LinesShell = () => {
 	                className="relative mt-4 h-[360px] overflow-hidden rounded-2xl border"
 	                style={{ borderColor: "var(--border)" }}
 	              >
-	                <div className="absolute inset-0">
-	                  <DeckGL
-	                    initialViewState={viewState}
-	                    controller
-	                    viewState={viewState}
-	                    onViewStateChange={(evt) => setViewState(evt.viewState as ViewState)}
-	                    layers={pathLayers}
-		                  >
-		                    <MapGL
-		                      ref={mapRef}
-		                      reuseMaps
-		                      mapLib={maplibregl}
-		                      mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
-		                      style={{ width: "100%", height: "100%" }}
-		                    />
-		                  </DeckGL>
-	                </div>
+                    <div className="absolute inset-0">
+                      <MapGL
+                        ref={mapRef}
+                        reuseMaps
+                        mapLib={maplibregl}
+                        mapStyle="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+                        style={{ width: "100%", height: "100%" }}
+                        initialViewState={viewState}
+                        onMove={(evt) => setViewState(evt.viewState as ViewState)}
+                        onLoad={() => setMapReady(true)}
+                      >
+                        {mapReady && deckGlReady && pathLayers.length > 0 ? (
+                          <DeckGL
+                            style={{ position: "absolute", inset: "0", pointerEvents: "none" }}
+                            layers={pathLayers}
+                            viewState={viewState}
+                            controller={false}
+                          />
+                        ) : null}
+                      </MapGL>
+                    </div>
 	                {lineShapesQuery.isLoading && (
 	                  <div
 	                    className="absolute inset-0 flex items-center justify-center text-sm"

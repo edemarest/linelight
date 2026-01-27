@@ -110,10 +110,34 @@ export type MbtaLiveFacility = JsonApiResource<MbtaLiveFacilityAttributes> & {
   type: "live_facility";
 };
 
+export interface MbtaFacilityAttributes {
+  latitude: number | null;
+  longitude: number | null;
+  long_name: string | null;
+  short_name: string | null;
+  type: string | null;
+  properties?: Array<{ name?: string | null; value?: unknown }> | null;
+}
+
+export type MbtaFacility = JsonApiResource<MbtaFacilityAttributes> & {
+  type: "facility";
+};
+
 export interface MbtaShapeAttributes {
   polyline: string | null;
 }
 
 export type MbtaShape = JsonApiResource<MbtaShapeAttributes> & {
   type: "shape";
+};
+
+export interface MbtaRoutePatternAttributes {
+  name: string | null;
+  direction_id: DirectionId;
+  canonical?: boolean | null;
+  typicality?: number | null;
+}
+
+export type MbtaRoutePattern = JsonApiResource<MbtaRoutePatternAttributes> & {
+  type: "route_pattern";
 };

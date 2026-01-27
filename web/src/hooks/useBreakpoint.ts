@@ -7,13 +7,6 @@ const BREAKPOINTS = {
   tablet: 1024,
 };
 
-const getViewportWidth = () => {
-  if (typeof window === "undefined") {
-    return BREAKPOINTS.tablet;
-  }
-  return window.innerWidth;
-};
-
 export type BreakpointInfo = {
   width: number;
   isMobile: boolean;
@@ -22,7 +15,9 @@ export type BreakpointInfo = {
 };
 
 export const useBreakpoint = (): BreakpointInfo => {
-  const [width, setWidth] = useState<number>(getViewportWidth);
+  const [width, setWidth] = useState<number>(() =>
+    typeof window !== "undefined" ? window.innerWidth : BREAKPOINTS.tablet,
+  );
 
   useEffect(() => {
     const handleResize = () => setWidth(window.innerWidth);

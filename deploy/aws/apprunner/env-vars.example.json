@@ -1,0 +1,11 @@
+[
+  { "name": "PORT", "value": "4000" },
+  { "name": "MBTA_API_BASE_URL", "value": "https://api-v3.mbta.com" },
+  { "name": "MBTA_API_KEY", "value": "REPLACE_ME" },
+  { "name": "LOG_LEVEL", "value": "info" },
+  { "name": "MBTA_RATE_LIMIT_WINDOW_MS", "value": "10000" },
+  { "name": "MBTA_RATE_LIMIT_MAX_REQUESTS", "value": "6" },
+  { "name": "MBTA_MAX_RETRIES", "value": "4" },
+  { "name": "MBTA_RETRY_BASE_DELAY_MS", "value": "500" },
+  { "name": "MBTA_RETRY_MAX_DELAY_MS", "value": "7500" }
+]

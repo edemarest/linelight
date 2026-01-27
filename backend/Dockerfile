@@ -13,7 +13,7 @@ RUN cd backend && npm install
 FROM base AS builder
 WORKDIR /app
 COPY backend ./backend
-COPY --from=deps /app/packages ./packages
+COPY --from=deps /app/packages /app/packages
 COPY --from=deps /app/backend/node_modules ./backend/node_modules
 WORKDIR /app/backend
 RUN npm run build
@@ -30,6 +30,9 @@ ENV PORT=4000
 ENV NODE_ENV=production
 EXPOSE 4000
 COPY backend/package.json backend/package-lock.json ./
+COPY backend/migrations ./migrations
+COPY backend/rds-ca-bundle.pem ./rds-ca-bundle.pem
+COPY --from=deps /app/packages /app/packages
 COPY --from=prod_deps /app/backend/node_modules ./node_modules
 COPY --from=builder /app/backend/dist ./dist
 CMD ["node", "dist/index.js"]

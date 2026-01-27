@@ -1,3 +1,4 @@
+// Shared API fetch helpers used by both backend and frontend clients.
 import type { RequestInitWithSignal } from "./types";
 import type { HomeResponse } from "../models/home";
 import type { GetStationBoardResponse } from "../models/stationBoard";
@@ -16,7 +17,7 @@ import type { LatLng } from "../models/common";
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 const ensureLeadingSlash = (value: string) => (value.startsWith("/") ? value : `/${value}`);
 
-const buildUrl = (baseUrl: string, path: string, query?: Record<string, string | number | undefined>) => {
+const buildUrl = (baseUrl: string, path: string, query?: Record<string, string | number | boolean | undefined>) => {
   const url = new URL(`${trimTrailingSlash(baseUrl)}${ensureLeadingSlash(path)}`);
   if (query) {
     Object.entries(query).forEach(([key, value]) => {
@@ -57,7 +58,7 @@ export const fetchHome = async (
 export const fetchStationBoard = async (
   baseUrl: string,
   stopId: string,
-  params?: Partial<LatLng>,
+  params?: Partial<LatLng> & { includeAlerts?: boolean; includeFacilities?: boolean },
   init?: RequestInitWithSignal,
 ): Promise<GetStationBoardResponse> => {
   const url = buildUrl(baseUrl, `/api/stations/${stopId}/board`, params);

@@ -1,3 +1,4 @@
+// Line overview builder: health segments + headways + alerts for a line.
 import type { MbtaCache } from "../cache/mbtaCache";
 import type {
   LineOverview,
@@ -9,6 +10,9 @@ import type {
 import type { MbtaLine, MbtaRoute, MbtaAlert, MbtaPrediction, MbtaStop } from "../models/mbta";
 import { extractFirstRelationshipId, extractRelationshipIds } from "../utils/jsonApi";
 import { mapRouteTypeToMode } from "../utils/routeMode";
+import { parseTimestamp } from "../utils/time";
+import { normalizeHexColor } from "../utils/colors";
+import { getLineRouteIds } from "../utils/mbta";
 
 const getLineById = (cache: MbtaCache, lineId: LineId) => {
   const lines = cache.getLines();
@@ -20,17 +24,12 @@ const buildRoutesMap = (routes: MbtaRoute[] = []) =>
   new Map<string, MbtaRoute>(routes.map((route) => [route.id, route]));
 
 const resolveColor = (line: MbtaLine, routesMap: Map<string, MbtaRoute>) => {
-  if (line.attributes.color) return `#${line.attributes.color}`;
-  const firstRoute = getRouteIdsForLine(line)
+  const directColor = normalizeHexColor(line.attributes.color);
+  if (directColor) return directColor;
+  const firstRoute = getLineRouteIds(line)
     .map((routeId) => routesMap.get(routeId))
     .find(Boolean);
-  return firstRoute?.attributes.color ? `#${firstRoute.attributes.color}` : "#6366f1";
-};
-
-const getRouteIdsForLine = (line: MbtaLine) => {
-  const relationshipIds = extractRelationshipIds(line.relationships?.routes);
-  if (relationshipIds.length > 0) return relationshipIds;
-  return [line.id];
+  return normalizeHexColor(firstRoute?.attributes.color) ?? "#6366f1";
 };
 
 const filterAlertsForRoutes = (alerts: MbtaAlert[] = [], routeIds: string[]) =>
@@ -52,20 +51,14 @@ const getPredictionsForRoutes = (predictions: MbtaPrediction[] = [], routeIds: s
     return routeId ? routeIds.includes(routeId) : false;
   });
 
-const toTimestamp = (value: string | null | undefined): number | null => {
-  if (!value) return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-};
-
 const computeHeadwayMinutes = (predictions: MbtaPrediction[]) => {
   const groups = new Map<number, number[]>();
 
   predictions.forEach((prediction) => {
     const direction = prediction.attributes.direction_id ?? 0;
     const timestamp =
-      toTimestamp(prediction.attributes.arrival_time) ??
-      toTimestamp(prediction.attributes.departure_time);
+      parseTimestamp(prediction.attributes.arrival_time) ??
+      parseTimestamp(prediction.attributes.departure_time);
 
     if (timestamp) {
       const list = groups.get(direction) ?? [];
@@ -127,8 +120,8 @@ const computeStopHeadways = (predictions: MbtaPrediction[]) => {
     const key = `${directionId}-${stopId}`;
 
     const predictedTime =
-      toTimestamp(prediction.attributes.arrival_time) ??
-      toTimestamp(prediction.attributes.departure_time);
+      parseTimestamp(prediction.attributes.arrival_time) ??
+      parseTimestamp(prediction.attributes.departure_time);
 
     if (!predictedTime) return;
 
@@ -237,7 +230,7 @@ export const buildLineOverview = (
   }
 
   const routesMap = buildRoutesMap(routesEntry.data);
-  const routeIds = getRouteIdsForLine(line);
+  const routeIds = getLineRouteIds(line);
   const primaryRouteId = routeIds[0] ?? line.id;
   const primaryRoute = routesMap.get(primaryRouteId);
   const stopsMap = buildStopsMap(stopsEntry.data);

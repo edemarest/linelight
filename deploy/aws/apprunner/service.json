@@ -1,0 +1,39 @@
+{
+  "ServiceName": "linelight-api",
+  "SourceConfiguration": {
+    "AuthenticationConfiguration": {
+      "AccessRoleArn": "arn:aws:iam::123456789012:role/AppRunnerECRAccessRole"
+    },
+    "AutoDeploymentsEnabled": true,
+    "ImageRepository": {
+      "ImageIdentifier": "123456789012.dkr.ecr.us-east-1.amazonaws.com/linelight-backend:latest",
+      "ImageRepositoryType": "ECR",
+      "ImageConfiguration": {
+        "Port": "4000",
+        "RuntimeEnvironmentVariables": {
+          "PORT": "4000",
+          "MBTA_API_BASE_URL": "https://api-v3.mbta.com",
+          "MBTA_API_KEY": "REPLACE_ME",
+          "LOG_LEVEL": "info",
+          "MBTA_RATE_LIMIT_WINDOW_MS": "10000",
+          "MBTA_RATE_LIMIT_MAX_REQUESTS": "6",
+          "MBTA_MAX_RETRIES": "4",
+          "MBTA_RETRY_BASE_DELAY_MS": "500",
+          "MBTA_RETRY_MAX_DELAY_MS": "7500"
+        }
+      }
+    }
+  },
+  "InstanceConfiguration": {
+    "Cpu": "256",
+    "Memory": "512"
+  },
+  "HealthCheckConfiguration": {
+    "Protocol": "HTTP",
+    "Path": "/api/health",
+    "Interval": 10,
+    "Timeout": 5,
+    "HealthyThreshold": 1,
+    "UnhealthyThreshold": 5
+  }
+}

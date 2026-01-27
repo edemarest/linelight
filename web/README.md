@@ -1,36 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LineLight Web
 
-## Getting Started
+Map-first Next.js frontend for LineLight. It renders the live MBTA map, stop sheets, trip planning, and follow mode by calling the backend API and fetching landmark images from S3.
 
-First, run the development server:
+## Quickstart (local dev)
+
+From the repo root:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+
+cp web/.env.example web/.env.local
+
+npm run dev:web
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+`web/.env.local` supports these common values:
 
-## Learn More
+- `NEXT_PUBLIC_API_BASE_URL` (defaults to `http://localhost:4000` when running on localhost)
+- `NEXT_PUBLIC_LANDMARKS_BASE_URL` (S3 base URL for landmark images)
+- `NEXT_PUBLIC_TRIP_PLANNER_TIMEOUT_MS` (optional)
+- `NEXT_PUBLIC_DEFAULT_MAP_LAT`, `NEXT_PUBLIC_DEFAULT_MAP_LNG`, `NEXT_PUBLIC_DEFAULT_MAP_ZOOM` (optional)
 
-To learn more about Next.js, take a look at the following resources:
+## Key files
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `web/src/components/home/HomeShell.tsx` — primary map UI shell
+- `web/src/components/stop/StopSheetPanel.tsx` — stop sheet UI
+- `web/src/lib/api.ts` — frontend API wrapper
+- `web/src/lib/config.ts` — env config with defaults
+- `web/src/lib/designTokens.ts` — UI color tokens
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Scripts
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm --workspace web run dev
+npm --workspace web run build
+npm --workspace web run lint
+```

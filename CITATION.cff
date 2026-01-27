@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+title: "LineLight"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: "Demarest"
+    given-names: "Ella"
+url: "https://github.com/edemarest/linelight"
+repository-code: "https://github.com/edemarest/linelight"
+license: Apache-2.0
+version: "1.0.0"

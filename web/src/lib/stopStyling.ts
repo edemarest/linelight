@@ -22,9 +22,9 @@ const hexToRgba = (hex: string, alpha: number) => {
 };
 
 const gradientForColor = (color: string, scheme: ThemeMode): StopHue => {
-  const startAlpha = scheme === "dark" ? 0.28 : 0.12;
-  const endAlpha = scheme === "dark" ? 0.55 : 0.28;
-  const borderAlpha = scheme === "dark" ? 0.7 : 0.45;
+  const startAlpha = scheme === "dark" ? 0.28 : 0.06;
+  const endAlpha = scheme === "dark" ? 0.55 : 0.18;
+  const borderAlpha = scheme === "dark" ? 0.7 : 0.28;
   return {
     background: `linear-gradient(135deg, ${hexToRgba(color, startAlpha)} 0%, ${hexToRgba(color, endAlpha)} 100%)`,
     borderColor: hexToRgba(color, borderAlpha),

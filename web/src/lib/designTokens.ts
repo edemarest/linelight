@@ -1,3 +1,4 @@
+// Color tokens for line and direction theming across the UI.
 const HEX_REGEX = /^#?([a-f\d]{6})$/i;
 
 const withAlpha = (hex: string, alpha: number): string => {
@@ -40,7 +41,8 @@ const LINE_BASE: Array<[string, string, string]> = [
   ["Green-C", "Green Line C", "#4FB870"],
   ["Green-D", "Green Line D", "#4FB870"],
   ["Green-E", "Green Line E", "#4FB870"],
-  ["Mattapan", "Mattapan", "#D1367A"],
+  ["Mattapan", "Mattapan", "#FFFFFF"],
+  ["CommuterRail", "Commuter Rail", "#B15CFF"],
   ["Bus", "Bus", "#F4C542"],
 ];
 
@@ -65,6 +67,7 @@ const resolveLineKey = (routeId?: string | null): string | null => {
   if (!routeId) return null;
   if (BASE_TOKEN_MAP.has(routeId)) return routeId;
   if (routeId.startsWith("Green-")) return "Green-B";
+  if (/^CR-/i.test(routeId) || routeId.toLowerCase().includes("commuter")) return "CommuterRail";
   if (/^\d+$/.test(routeId)) return "Bus";
   if (routeId.toLowerCase().includes("bus")) return "Bus";
   return null;

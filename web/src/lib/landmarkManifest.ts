@@ -1,4 +1,18 @@
-export const LANDMARK_BY_SLUG = {
+// Landmark image map; paths are rewritten to the configured S3 base URL.
+import { envConfig } from "./config";
+
+const withBase = (path: string) => {
+  if (!envConfig.landmarksBaseUrl) return path;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${envConfig.landmarksBaseUrl}${normalizedPath}`;
+};
+
+const mapWithBase = <T extends Record<string, string>>(values: T): T => {
+  const entries = Object.entries(values).map(([key, value]) => [key, withBase(value)]);
+  return Object.fromEntries(entries) as T;
+};
+
+const RAW_LANDMARK_BY_SLUG = {
   "copley": "/landmarks/copley.png",
   "airport": "/landmarks/airport.png",
   "allstonstreet": "/landmarks/allston-street.png",
@@ -111,7 +125,9 @@ export const LANDMARK_BY_SLUG = {
   "woodland": "/landmarks/woodland.png"
 } as const;
 
-export const LANDMARK_BY_ID = {
+export const LANDMARK_BY_SLUG = mapWithBase(RAW_LANDMARK_BY_SLUG);
+
+const RAW_LANDMARK_BY_ID = {
   "70006": "/landmarks/jackson-square-70006.png",
   "70010": "/landmarks/ruggles-70010.png",
   "70015": "/landmarks/back-bay-70015.png",
@@ -191,3 +207,5 @@ export const LANDMARK_BY_ID = {
   "71150": "/landmarks/kenmore-71150.png",
   "170136": "/landmarks/babcock-street-170136.png"
 } as const;
+
+export const LANDMARK_BY_ID = mapWithBase(RAW_LANDMARK_BY_ID);

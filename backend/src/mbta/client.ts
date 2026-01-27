@@ -1,10 +1,13 @@
+// MBTA API client with rate limiting, retry/backoff, and telemetry for health reporting.
 import type { JsonApiResponse } from "../models/jsonApi";
 import type {
   MbtaAlert,
+  MbtaFacility,
   MbtaLine,
   MbtaLiveFacility,
   MbtaPrediction,
   MbtaRoute,
+  MbtaRoutePattern,
   MbtaSchedule,
   MbtaShape,
   MbtaStop,
@@ -215,12 +218,20 @@ export class MbtaClient {
     return this.get<MbtaLiveFacility>("/live_facilities", params);
   }
 
+  async getFacilities(params?: QueryParams) {
+    return this.get<MbtaFacility>("/facilities", params);
+  }
+
   async getShapes(params?: QueryParams) {
     return this.get<MbtaShape>("/shapes", params);
   }
 
   async getTrips(params?: QueryParams) {
     return this.get<MbtaTrip>("/trips", params);
+  }
+
+  async getRoutePatterns(params?: QueryParams) {
+    return this.get<MbtaRoutePattern>("/route_patterns", params);
   }
 
   private async get<TResource>(path: string, params?: QueryParams) {

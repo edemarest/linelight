@@ -1,10 +1,15 @@
+import path from "path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
   transpilePackages: ["@linelight/core"],
+  output: "export",
+  trailingSlash: true,
+  images: {
+    unoptimized: true,
+  },
   turbopack: {
-    root: "/app",
+    root: path.resolve(__dirname, ".."),
   },
 };
 

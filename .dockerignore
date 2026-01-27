@@ -12,6 +12,7 @@ dist
 coverage
 tmp
 temp
+web/out
 
 # Large non-build artifacts
 cleanup-backup-*/

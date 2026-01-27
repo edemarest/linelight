@@ -1,8 +1,9 @@
-import { createClient } from "redis";
+// Thin Redis wrapper that no-ops when REDIS_URL is unset (local/dev friendly).
 import { config } from "../config";
 import { logger } from "../utils/logger";
 
-type RedisClientInstance = ReturnType<typeof createClient>;
+type RedisModule = typeof import("redis");
+type RedisClientInstance = ReturnType<RedisModule["createClient"]>;
 
 export type RedisStatus = "disabled" | "connecting" | "ready" | "error";
 
@@ -36,7 +37,8 @@ export const createRedisManager = (): RedisManager => {
     return NOOP_MANAGER;
   }
 
-  const client = createClient({ url: config.redisUrl });
+  const redisModule = require("redis") as RedisModule;
+  const client = redisModule.createClient({ url: config.redisUrl });
   let status: RedisStatus = "connecting";
   let connectionError: Error | undefined;
 
