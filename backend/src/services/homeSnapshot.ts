@@ -582,7 +582,8 @@ export const buildHomeSnapshot = async (
     (a, b) => a.minDistance - b.minDistance,
   );
   let limitedNearbyGroups = orderedNearbyGroups.slice(0, options.limit);
-  if (limitedNearbyGroups.length === 0) {
+  const usingSuggestedFallback = limitedNearbyGroups.length === 0;
+  if (usingSuggestedFallback) {
     limitedNearbyGroups = buildSuggestedNearbyGroups(
       allStops,
       options,
@@ -616,7 +617,7 @@ export const buildHomeSnapshot = async (
       });
     });
   };
-  limitedNearbyGroups.forEach((group) => registerGroupTargets(group, false));
+  limitedNearbyGroups.forEach((group) => registerGroupTargets(group, usingSuggestedFallback));
   favoriteGroupsMap.forEach((group) => registerGroupTargets(group, true));
 
   const uniqueStopTargets = Array.from(etaTargetStopIds)
@@ -644,7 +645,10 @@ export const buildHomeSnapshot = async (
   const limitedTargets = [...favoriteTargets, ...nonFavoriteTargets].slice(0, maxTargets);
 
   let prefetchedSnapshots = new Map<string, BlendedDeparture[]>();
-  if (favoriteTargets.length > 0) {
+  const canPrefetchFavorites =
+    typeof (client as unknown as { getSchedules?: unknown }).getSchedules === "function" &&
+    typeof (client as unknown as { getPredictions?: unknown }).getPredictions === "function";
+  if (favoriteTargets.length > 0 && canPrefetchFavorites) {
     try {
       prefetchedSnapshots = await fetchBlendedDeparturesForStops(
         client,
