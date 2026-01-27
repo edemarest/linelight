@@ -1278,6 +1278,8 @@ export const StopSheetPanel = ({
   const desktopSheetRef = useRef<HTMLElement | null>(null);
   const mobileScrollRef = useRef<HTMLDivElement | null>(null);
   const desktopScrollRef = useRef<HTMLDivElement | null>(null);
+  const mobileHeaderRef = useRef<HTMLDivElement | null>(null);
+  const desktopHeaderRef = useRef<HTMLDivElement | null>(null);
   const departuresSectionRef = useRef<HTMLDivElement | null>(null);
   const alertsSectionRef = useRef<HTMLDivElement | null>(null);
   const facilitiesSectionRef = useRef<HTMLDivElement | null>(null);
@@ -1296,6 +1298,28 @@ export const StopSheetPanel = ({
       if (panelRootRef) panelRootRef.current = null;
     };
   }, [panelRootRef]);
+
+  const updateHeaderHeightVars = useCallback(() => {
+    if (typeof window === "undefined") return;
+    requestAnimationFrame(() => {
+      const apply = (sheet: HTMLElement | null, header: HTMLElement | null) => {
+        if (!sheet || !header) return;
+        const height = Math.round(header.getBoundingClientRect().height);
+        if (!Number.isFinite(height) || height <= 0) return;
+        sheet.style.setProperty("--stop-sheet-header-height", `${height}px`);
+      };
+      apply(mobileSheetRef.current, mobileHeaderRef.current);
+      apply(desktopSheetRef.current, desktopHeaderRef.current);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    updateHeaderHeightVars();
+    if (typeof window === "undefined") return;
+    window.addEventListener("resize", updateHeaderHeightVars);
+    return () => window.removeEventListener("resize", updateHeaderHeightVars);
+  }, [isOpen, updateHeaderHeightVars, routeGroups.length, boardQuery.isFetching, stopId, stopNameProp]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1342,12 +1366,14 @@ export const StopSheetPanel = ({
   const renderSheet = (variant: "mobile" | "desktop") => {
     const sheetRef = variant === "mobile" ? mobileSheetRef : desktopSheetRef;
     const scrollRef = variant === "mobile" ? mobileScrollRef : desktopScrollRef;
+    const headerRef = variant === "mobile" ? mobileHeaderRef : desktopHeaderRef;
     const sheetStyle =
       variant === "mobile"
         ? {
             height: mobileSheetHeightValue,
             maxHeight: mobileSheetHeightValue,
             "--stop-sheet-mobile-height": mobileSheetHeightValue,
+            "--stop-sheet-header-height": "124px",
           }
         : undefined;
     const showTabs = variant === "mobile";
@@ -1374,6 +1400,7 @@ export const StopSheetPanel = ({
         style={sheetStyle as CSSProperties | undefined}
       >
       <header
+        ref={headerRef}
         className={`stop-sheet-header sticky top-0 z-10 overflow-hidden border-b px-6 py-5 ${
           variant === "desktop" ? "rounded-tr-3xl" : "rounded-t-3xl"
         }`}
@@ -1486,10 +1513,15 @@ export const StopSheetPanel = ({
       </header>
       <div
         ref={scrollRef}
-        className="stop-sheet-scroll flex-1 overflow-y-auto pb-8 pt-5"
+        className="stop-sheet-scroll flex-1 pb-8 pt-5"
         style={{
           background: "var(--surface-soft)",
           paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 1.5rem)`,
+          overflowY: "auto",
+          maxHeight: variant === "mobile"
+            ? "calc(100vh - var(--stop-sheet-header-height) - env(safe-area-inset-top, 0px))"
+            : undefined,
+          WebkitOverflowScrolling: "touch",
         }}
       >
         {showTabs && (
