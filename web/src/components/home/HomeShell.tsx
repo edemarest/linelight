@@ -4712,7 +4712,6 @@ const HomeShellContent = () => {
     setTripOriginInput("");
     setTripDestinationInput("");
     setTripFocusedField(null);
-    setExpandedTripIds([]);
     lastPlannedKeyRef.current = null;
     setTripPlanView(createEmptyTripPlanView());
   }, [
@@ -5180,10 +5179,8 @@ const HomeShellContent = () => {
                     value={stopSearch}
                     onChange={(evt) => setStopSearch(evt.target.value)}
                     onFocus={() => {
-                      setSearchFocused(true);
                       setShowFiltersPanel(true);
                     }}
-                    onBlur={() => setSearchFocused(false)}
                     placeholder="Search all stops (Park Street, Red…)"
                     className="search-input input-prominent flex-1 pr-4 focus-outline"
                     aria-label="Search all stops"
@@ -5204,10 +5201,8 @@ const HomeShellContent = () => {
                       value={stopSearch}
                       onChange={(evt) => setStopSearch(evt.target.value)}
                       onFocus={() => {
-                        setSearchFocused(true);
                         setShowFiltersPanel(true);
                       }}
-                      onBlur={() => setSearchFocused(false)}
                       placeholder="Search all stops (Park Street, Red…)"
                       className="search-input input-prominent flex-1 pr-4 focus-outline"
                       aria-label="Search all stops"
