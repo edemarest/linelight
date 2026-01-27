@@ -3597,6 +3597,8 @@ const HomeShellContent = () => {
     hasActiveTripPlan: Boolean(activeTripPlan),
     isFollowingTrip,
   });
+  const shouldDimMapControls = preferStackedLayout && isMobile && mobileFocusMode === "details";
+  const showMapControls = mapVisibility.showMapControls && !shouldDimMapControls;
   const interactiveLayerIds = useMemo(() => {
     if (!mapVisibility.showStationMarkers) return [];
     return [STATION_MARKER_LAYER_ID, STATION_MARKER_SELECTED_LAYER_ID, STATION_MARKER_HOVER_LAYER_ID];
@@ -3913,7 +3915,7 @@ const HomeShellContent = () => {
     preferStackedLayout && isStopSheetOpen
       ? isMobile
         ? mobileFocusMode === "map"
-          ? "40vh"
+          ? "32vh"
           : "90vh"
         : "90vh"
       : baseMobileSheetHeight;
@@ -6062,7 +6064,14 @@ const HomeShellContent = () => {
                   </div>
                 )}
                 {mapVisibility.showMapControls && (
-                  <div className="absolute z-30 flex flex-col gap-2" style={mapControlsStyle}>
+                  <div
+                    className="absolute z-30 flex flex-col gap-2 transition-opacity duration-200"
+                    style={{
+                      ...mapControlsStyle,
+                      opacity: showMapControls ? 1 : 0,
+                      pointerEvents: showMapControls ? "auto" : "none",
+                    }}
+                  >
                     <button
                       type="button"
                       onClick={handleUseDeviceLocation}

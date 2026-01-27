@@ -496,6 +496,7 @@ body {
 
   .input-prominent {
     padding: 0.2rem 0.5rem;
+    font-size: 16px;
   }
 
   .search-shell--mobile-trip {
@@ -505,6 +506,11 @@ body {
 
   .search-shell--mobile-trip .input-prominent {
     padding: 0.2rem 0.45rem;
+    font-size: 16px;
+  }
+
+  .search-input {
+    font-size: 16px;
   }
 }
 
